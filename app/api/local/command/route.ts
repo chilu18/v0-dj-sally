@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from "next/server"
 const SALLY_REMOTE_CONTROL_URL = process.env.SALLY_REMOTE_CONTROL_URL || "http://127.0.0.1:8787"
 const SALLY_DEVICE_ID = process.env.SALLY_DEVICE_ID || "sally-samsung"
 const SALLY_ADMIN_TOKEN = process.env.SALLY_ADMIN_TOKEN
+const SALLY_WAIT_MS = process.env.SALLY_WAIT_MS || "10000"
 
 interface CommandPayload {
   type: string
@@ -85,16 +86,13 @@ export async function POST(request: NextRequest) {
     }
 
     // Forward to Sally API
-    const response = await fetch(`${SALLY_REMOTE_CONTROL_URL}/command`, {
+    const response = await fetch(sallyCommandUrl(), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${SALLY_ADMIN_TOKEN}`,
       },
-      body: JSON.stringify({
-        device_id: SALLY_DEVICE_ID,
-        ...sallyCommand,
-      }),
+      body: JSON.stringify(sallyCommand),
     })
 
     if (!response.ok) {
@@ -125,4 +123,9 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     )
   }
+}
+
+function sallyCommandUrl() {
+  const base = SALLY_REMOTE_CONTROL_URL.replace(/\/$/, "")
+  return `${base}/devices/${encodeURIComponent(SALLY_DEVICE_ID)}/command?wait_ms=${SALLY_WAIT_MS}`
 }

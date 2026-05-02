@@ -1,10 +1,15 @@
+import { existsSync, readFileSync } from "node:fs"
+import { join } from "node:path"
 import { WebSocketServer, WebSocket } from "ws"
+
+loadEnvFiles()
 
 // Environment variables
 const SALLY_REMOTE_CONTROL_URL = process.env.SALLY_REMOTE_CONTROL_URL || "http://127.0.0.1:8787"
 const SALLY_DEVICE_ID = process.env.SALLY_DEVICE_ID || "sally-samsung"
 const SALLY_ADMIN_TOKEN = process.env.SALLY_ADMIN_TOKEN
 const DJ_SALLY_WS_PORT = parseInt(process.env.DJ_SALLY_WS_PORT || "8080", 10)
+const SALLY_WAIT_MS = parseInt(process.env.SALLY_WAIT_MS || "10000", 10)
 
 // Device state
 interface DeviceState {
@@ -81,16 +86,13 @@ async function sendToSally(command: Record<string, unknown>): Promise<boolean> {
   }
 
   try {
-    const response = await fetch(`${SALLY_REMOTE_CONTROL_URL}/command`, {
+    const response = await fetch(sallyCommandUrl(), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${SALLY_ADMIN_TOKEN}`,
       },
-      body: JSON.stringify({
-        device_id: SALLY_DEVICE_ID,
-        ...command,
-      }),
+      body: JSON.stringify(command),
     })
 
     if (!response.ok) {
@@ -103,6 +105,33 @@ async function sendToSally(command: Record<string, unknown>): Promise<boolean> {
   } catch (error) {
     console.error("[Bridge] Failed to send Sally command:", error)
     return false
+  }
+}
+
+function sallyCommandUrl() {
+  const base = SALLY_REMOTE_CONTROL_URL.replace(/\/$/, "")
+  return `${base}/devices/${encodeURIComponent(SALLY_DEVICE_ID)}/command?wait_ms=${SALLY_WAIT_MS}`
+}
+
+function loadEnvFiles() {
+  const shellEnv = new Set(Object.keys(process.env))
+
+  for (const fileName of [".env", ".env.local"]) {
+    const filePath = join(process.cwd(), fileName)
+    if (!existsSync(filePath)) continue
+
+    const text = readFileSync(filePath, "utf8")
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) continue
+
+      const index = trimmed.indexOf("=")
+      const key = trimmed.slice(0, index).trim()
+      const value = trimmed.slice(index + 1).trim().replace(/^['"]|['"]$/g, "")
+      if (/^[A-Z0-9_]+$/.test(key) && !shellEnv.has(key)) {
+        process.env[key] = value
+      }
+    }
   }
 }
 

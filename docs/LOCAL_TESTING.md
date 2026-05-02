@@ -7,7 +7,7 @@ This guide explains how to run DJ Sally locally on your Mac for hardware testing
 ```
 ┌─────────────────┐     WebSocket      ┌─────────────────┐      HTTP       ┌─────────────────┐
 │                 │ ◄────────────────► │                 │ ◄─────────────► │                 │
-│  Browser        │   ws://localhost   │  Bridge Server  │   POST /command │  Sally API      │
+│  Browser        │   ws://localhost   │  Bridge Server  │ POST /devices/  │  Sally API      │
 │  Dashboard      │      :8080         │  (Node.js)      │                 │  (8787)         │
 │                 │                    │                 │                 │                 │
 └─────────────────┘                    └─────────────────┘                 └─────────────────┘
@@ -56,6 +56,7 @@ SALLY_ADMIN_TOKEN=your-actual-token-here
 
 # WebSocket Bridge
 DJ_SALLY_WS_PORT=8080
+SALLY_WAIT_MS=10000
 NEXT_PUBLIC_DJ_SALLY_WS_URL=ws://localhost:8080
 ```
 
@@ -68,6 +69,8 @@ Run both the Next.js app and the WebSocket bridge:
 ```bash
 pnpm dev:all
 ```
+
+The bridge loads `.env.local` itself, so the `SALLY_ADMIN_TOKEN` value remains server-side and is not sent to the browser.
 
 Or run them separately in two terminals:
 
