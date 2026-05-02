@@ -25,10 +25,13 @@ export interface DeviceState {
       rawPath: string
       rawPaths?: string[]
       eventPath: string
+      eventPaths?: string[]
       learnedCodes: number[]
       lastEvent: string | null
       lastHex: string | null
       lastSource?: string | null
+      lastKnob?: string | null
+      knobPressed?: boolean
     }[]
   }
 }

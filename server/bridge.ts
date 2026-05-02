@@ -13,16 +13,28 @@ const SALLY_WAIT_MS = parseInt(process.env.SALLY_WAIT_MS || "10000", 10)
 const HID_ENABLED = process.env.DJ_SALLY_HID_ENABLED !== "0"
 const HID_DECK_A_KEYBOARD =
   process.env.DJ_SALLY_HID_DECK_A_KEYBOARD || "/dev/input/by-path/pci-0000:00:14.0-usb-0:2:1.2-event-kbd"
+const HID_DECK_A_KEYBOARD_PRIMARY =
+  process.env.DJ_SALLY_HID_DECK_A_KEYBOARD_PRIMARY || "/dev/input/by-path/pci-0000:00:14.0-usb-0:2:1.0-event-kbd"
 const HID_DECK_A_ENCODER =
   process.env.DJ_SALLY_HID_DECK_A_ENCODER || "/dev/input/by-path/pci-0000:00:14.0-usb-0:2:1.3-event-mouse"
 const HID_DECK_B_KEYBOARD =
   process.env.DJ_SALLY_HID_DECK_B_KEYBOARD || "/dev/input/by-path/pci-0000:00:14.0-usb-0:3:1.2-event-kbd"
+const HID_DECK_B_KEYBOARD_PRIMARY =
+  process.env.DJ_SALLY_HID_DECK_B_KEYBOARD_PRIMARY || "/dev/input/by-path/pci-0000:00:14.0-usb-0:3:1.0-event-kbd"
 const HID_DECK_B_ENCODER =
   process.env.DJ_SALLY_HID_DECK_B_ENCODER || "/dev/input/by-path/pci-0000:00:14.0-usb-0:3:1.3-event-mouse"
 const HID_DECK_A_RAW = process.env.DJ_SALLY_HID_DECK_A_RAW || "/dev/hidraw1"
 const HID_DECK_B_RAW = process.env.DJ_SALLY_HID_DECK_B_RAW || "/dev/hidraw4"
 const HID_DECK_A_RAWS = parsePathList(process.env.DJ_SALLY_HID_DECK_A_RAWS, [HID_DECK_A_RAW, "/dev/hidraw2", "/dev/hidraw3"])
 const HID_DECK_B_RAWS = parsePathList(process.env.DJ_SALLY_HID_DECK_B_RAWS, [HID_DECK_B_RAW, "/dev/hidraw5", "/dev/hidraw6"])
+const HID_DECK_A_KEYBOARDS = parsePathList(process.env.DJ_SALLY_HID_DECK_A_KEYBOARDS, [
+  HID_DECK_A_KEYBOARD_PRIMARY,
+  HID_DECK_A_KEYBOARD,
+])
+const HID_DECK_B_KEYBOARDS = parsePathList(process.env.DJ_SALLY_HID_DECK_B_KEYBOARDS, [
+  HID_DECK_B_KEYBOARD_PRIMARY,
+  HID_DECK_B_KEYBOARD,
+])
 const HID_BUTTON_MAP = parseButtonMap(process.env.DJ_SALLY_HID_BUTTON_MAP)
 const INPUT_EVENT_SIZE = 24
 const EV_KEY = 1
@@ -33,6 +45,8 @@ const KEY_REPEAT = 2
 const REL_X = 0
 const REL_Y = 1
 const REL_WHEEL = 8
+const BTN_LEFT = 272
+const BTN_MIDDLE = 274
 const MODIFIER_KEY_CODES = new Set([29, 42, 54, 56, 97, 100, 125, 126])
 
 // Device state
@@ -57,10 +71,13 @@ interface DeviceState {
       rawPath: string
       rawPaths?: string[]
       eventPath: string
+      eventPaths?: string[]
       learnedCodes: number[]
       lastEvent: string | null
       lastHex: string | null
       lastSource?: string | null
+      lastKnob?: string | null
+      knobPressed?: boolean
     }[]
   }
 }
@@ -102,22 +119,28 @@ let deviceState: DeviceState = {
         label: "Deck A",
         rawPath: HID_DECK_A_RAWS[0] ?? HID_DECK_A_RAW,
         rawPaths: HID_DECK_A_RAWS,
-        eventPath: HID_DECK_A_KEYBOARD,
+        eventPath: HID_DECK_A_KEYBOARDS[0] ?? HID_DECK_A_KEYBOARD,
+        eventPaths: [...HID_DECK_A_KEYBOARDS, HID_DECK_A_ENCODER],
         learnedCodes: [],
         lastEvent: null,
         lastHex: null,
         lastSource: null,
+        lastKnob: null,
+        knobPressed: false,
       },
       {
         pad: 2,
         label: "Deck B",
         rawPath: HID_DECK_B_RAWS[0] ?? HID_DECK_B_RAW,
         rawPaths: HID_DECK_B_RAWS,
-        eventPath: HID_DECK_B_KEYBOARD,
+        eventPath: HID_DECK_B_KEYBOARDS[0] ?? HID_DECK_B_KEYBOARD,
+        eventPaths: [...HID_DECK_B_KEYBOARDS, HID_DECK_B_ENCODER],
         learnedCodes: [],
         lastEvent: null,
         lastHex: null,
         lastSource: null,
+        lastKnob: null,
+        knobPressed: false,
       },
     ],
   },
@@ -129,6 +152,7 @@ let previousVolume = 65
 // Connected clients
 const clients = new Set<WebSocket>()
 const learnedButtonCodes = new Map<number, number[]>()
+const knobPressed = new Map<number, boolean>()
 
 interface InputEvent {
   type: number
@@ -142,10 +166,10 @@ function startHidReaders() {
     return
   }
 
-  startKeyboardReader(1, HID_DECK_A_KEYBOARD)
+  for (const path of HID_DECK_A_KEYBOARDS) startKeyboardReader(1, path)
   startEncoderReader(1, HID_DECK_A_ENCODER)
   for (const path of HID_DECK_A_RAWS) startRawHidReader(1, path)
-  startKeyboardReader(2, HID_DECK_B_KEYBOARD)
+  for (const path of HID_DECK_B_KEYBOARDS) startKeyboardReader(2, path)
   startEncoderReader(2, HID_DECK_B_ENCODER)
   for (const path of HID_DECK_B_RAWS) startRawHidReader(2, path)
 }
@@ -219,6 +243,17 @@ function startKeyboardReader(pad: number, path: string) {
 
 function startEncoderReader(pad: number, path: string) {
   startInputReader(`Deck ${pad} encoder`, path, (event) => {
+    if (event.type === EV_KEY && [BTN_LEFT, BTN_MIDDLE].includes(event.code)) {
+      const pressed = event.value === KEY_PRESS
+      knobPressed.set(pad, pressed)
+      const deck = deviceState.macroPads[pad - 1]
+      if (deck) deck.connected = true
+      updateHidKnob(pad, `${pressed ? "knob click down" : "knob click up"} code=${event.code}`, pressed, path)
+      console.log(`[HID] Deck ${pad} ${pressed ? "knob click down" : "knob click up"} code=${event.code}`)
+      broadcastState()
+      return
+    }
+
     if (event.type !== EV_REL || ![REL_X, REL_Y, REL_WHEEL].includes(event.code) || event.value === 0) {
       return
     }
@@ -226,9 +261,14 @@ function startEncoderReader(pad: number, path: string) {
     const deck = deviceState.macroPads[pad - 1]
     if (!deck) return
 
+    const held = knobPressed.get(pad) === true
+    const direction = event.value > 0 ? "right" : "left"
     deck.connected = true
     deck.encoder.value = clamp(deck.encoder.value + event.value, deck.encoder.min, deck.encoder.max)
-    console.log(`[HID] Deck ${pad} encoder value=${deck.encoder.value} code=${event.code} delta=${event.value}`)
+    updateHidKnob(pad, `${held ? "click+" : ""}rotate ${direction} code=${event.code} delta=${event.value}`, held, path)
+    console.log(
+      `[HID] Deck ${pad} ${held ? "click+" : ""}rotate ${direction} value=${deck.encoder.value} code=${event.code} delta=${event.value}`
+    )
     broadcastState()
   })
 }
@@ -325,6 +365,15 @@ function syncLearnedCodes(pad: number) {
   const deck = deviceState.hidSetup?.decks.find((value) => value.pad === pad)
   if (!deck) return
   deck.learnedCodes = [...(learnedButtonCodes.get(pad) ?? [])]
+}
+
+function updateHidKnob(pad: number, lastKnob: string, pressed: boolean, source?: string) {
+  const deck = deviceState.hidSetup?.decks.find((value) => value.pad === pad)
+  if (!deck) return
+  deck.lastEvent = lastKnob
+  deck.lastKnob = lastKnob
+  deck.knobPressed = pressed
+  if (source) deck.lastSource = source
 }
 
 function parseButtonMap(value: string | undefined): Map<string, number> {

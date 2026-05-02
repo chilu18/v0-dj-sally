@@ -399,7 +399,10 @@ export function Dashboard() {
                   <div>
                     <p className="text-sm font-medium">{deck.label}</p>
                     <p className="text-[11px] text-muted-foreground">
-                      {(deck.rawPaths?.length ? deck.rawPaths : [deck.rawPath || deck.eventPath]).join(", ")}
+                      events: {(deck.eventPaths?.length ? deck.eventPaths : [deck.eventPath]).join(", ")}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      raw: {(deck.rawPaths?.length ? deck.rawPaths : [deck.rawPath]).join(", ")}
                     </p>
                   </div>
                   <div
@@ -431,6 +434,7 @@ export function Dashboard() {
 
                 <div className="mt-3 space-y-1 font-mono text-[11px] text-muted-foreground">
                   <p>event: {deck.lastEvent ?? "waiting"}</p>
+                  <p>knob: {deck.lastKnob ?? "waiting"} {deck.knobPressed ? "(held)" : ""}</p>
                   <p>source: {deck.lastSource ?? "--"}</p>
                   <p className="break-all">raw: {deck.lastHex ?? "--"}</p>
                 </div>
