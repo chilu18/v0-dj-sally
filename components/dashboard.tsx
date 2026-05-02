@@ -31,7 +31,19 @@ import {
 } from "lucide-react"
 
 export function Dashboard() {
-  const { status, deviceState, sendCommand, connect, disconnect } = useWebSocket()
+  const { 
+    status, 
+    deviceState, 
+    connect, 
+    disconnect,
+    sendPTZ,
+    sendMacroButton,
+    sendEncoder,
+    sendVolume,
+    sendMute,
+    sendTransport,
+    sendEffect,
+  } = useWebSocket()
   const [isPlaying, setIsPlaying] = useState(false)
   const [bpm, setBpm] = useState(128)
   const [waveformBars, setWaveformBars] = useState<number[]>(Array(32).fill(0))
@@ -46,28 +58,34 @@ export function Dashboard() {
     return () => clearInterval(interval)
   }, [status, isPlaying])
 
-  const handlePTZControl = (action: string) => {
-    sendCommand("ptz_control", { action })
+  const handlePTZControl = (action: "up" | "down" | "left" | "right" | "zoomIn" | "zoomOut") => {
+    sendPTZ(action)
   }
 
-  const handleZoomChange = (value: number) => {
-    sendCommand("ptz_zoom", { zoom: value })
+  const handleButtonPress = (pad: number, buttonId: number) => {
+    sendMacroButton(pad, buttonId, true)
   }
 
-  const handleButtonPress = (padId: string, buttonId: number) => {
-    sendCommand("macro_button", { padId, buttonId })
-  }
-
-  const handleEncoderChange = (padId: string, value: number) => {
-    sendCommand("encoder_value", { padId, value })
+  const handleEncoderChange = (pad: number, value: number) => {
+    sendEncoder(pad, value)
   }
 
   const handleVolumeChange = (value: number) => {
-    sendCommand("speaker_volume", { volume: value })
+    sendVolume(value)
   }
 
   const handleMuteToggle = () => {
-    sendCommand("speaker_mute", { muted: !deviceState.speaker.muted })
+    sendMute(!deviceState.speaker.muted)
+  }
+
+  const handleTransport = (action: "play" | "pause" | "skipForward" | "skipBack") => {
+    sendTransport(action)
+    if (action === "play") setIsPlaying(true)
+    if (action === "pause") setIsPlaying(false)
+  }
+
+  const handleEffectClick = (effectName: string) => {
+    sendEffect(effectName.toLowerCase())
   }
 
   return (
@@ -92,7 +110,7 @@ export function Dashboard() {
             <Button
               variant={status === "connected" ? "default" : "outline"}
               size="sm"
-              onClick={status === "connected" ? disconnect : connect}
+              onClick={status === "connected" ? disconnect : () => connect()}
               className={cn(
                 "gap-2 transition-all",
                 status === "connected" && "bg-primary/20 text-primary border-primary/50 hover:bg-primary/30"
@@ -132,17 +150,17 @@ export function Dashboard() {
             ))}
           </div>
           <div className="relative flex items-center justify-center gap-4 mt-4">
-            <Button variant="ghost" size="icon" className="h-10 w-10">
+            <Button variant="ghost" size="icon" className="h-10 w-10" onClick={() => handleTransport("skipBack")}>
               <SkipBack className="h-5 w-5" />
             </Button>
             <Button
               size="icon"
               className="h-14 w-14 rounded-full bg-[#ed4c4c] hover:bg-[#ed4c4c]/90 text-white shadow-lg shadow-[#ed4c4c]/25"
-              onClick={() => setIsPlaying(!isPlaying)}
+              onClick={() => handleTransport(isPlaying ? "pause" : "play")}
             >
               {isPlaying ? <Pause className="h-6 w-6" /> : <Play className="h-6 w-6 ml-0.5" />}
             </Button>
-            <Button variant="ghost" size="icon" className="h-10 w-10">
+            <Button variant="ghost" size="icon" className="h-10 w-10" onClick={() => handleTransport("skipForward")}>
               <SkipForward className="h-5 w-5" />
             </Button>
           </div>
@@ -157,9 +175,9 @@ export function Dashboard() {
               subtitle="Macro Pad 1"
               connected={deviceState.macroPads[0]?.connected}
               encoderValue={deviceState.macroPads[0]?.encoder.value ?? 50}
-              onEncoderChange={(v) => handleEncoderChange("pad1", v)}
+              onEncoderChange={(v) => handleEncoderChange(1, v)}
               buttons={deviceState.macroPads[0]?.buttons ?? []}
-              onButtonPress={(id) => handleButtonPress("pad1", id)}
+              onButtonPress={(id) => handleButtonPress(1, id)}
               accentColor="primary"
             />
           </div>
@@ -240,10 +258,10 @@ export function Dashboard() {
                 <div className="flex items-center gap-1">
                   <div className={cn(
                     "h-2 w-2 rounded-full",
-                    deviceState.cameras.ptз.connected ? "bg-primary animate-pulse" : "bg-muted"
+                    deviceState.cameras.ptz.connected ? "bg-primary animate-pulse" : "bg-muted"
                   )} />
                   <span className="text-xs text-muted-foreground">
-                    {deviceState.cameras.ptз.connected ? "LIVE" : "OFF"}
+                    {deviceState.cameras.ptz.connected ? "LIVE" : "OFF"}
                   </span>
                 </div>
               </div>
@@ -254,7 +272,7 @@ export function Dashboard() {
                   <div className="absolute inset-0 flex items-center justify-center">
                     <Camera className="h-8 w-8 text-muted-foreground/30" />
                   </div>
-                  {deviceState.cameras.ptз.connected && (
+                  {deviceState.cameras.ptz.connected && (
                     <div className="absolute top-2 left-2 px-1.5 py-0.5 rounded bg-destructive/80 text-[10px] font-medium">
                       REC
                     </div>
@@ -279,28 +297,28 @@ export function Dashboard() {
               <div className="mt-3 flex items-center justify-center gap-2">
                 <div className="grid grid-cols-3 gap-1">
                   <div />
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handlePTZControl("up")}>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => sendPTZ("up")}>
                     <ChevronUp className="h-4 w-4" />
                   </Button>
                   <div />
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handlePTZControl("left")}>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => sendPTZ("left")}>
                     <ChevronLeft className="h-4 w-4" />
                   </Button>
                   <div className="h-8 w-8 rounded bg-secondary/50 border border-border/50" />
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handlePTZControl("right")}>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => sendPTZ("right")}>
                     <ChevronRight className="h-4 w-4" />
                   </Button>
                   <div />
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handlePTZControl("down")}>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => sendPTZ("down")}>
                     <ChevronDown className="h-4 w-4" />
                   </Button>
                   <div />
                 </div>
                 <div className="flex flex-col gap-1">
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleZoomChange(deviceState.cameras.ptз.zoom + 10)}>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handlePTZControl("zoomIn")}>
                     <ZoomIn className="h-4 w-4" />
                   </Button>
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleZoomChange(deviceState.cameras.ptз.zoom - 10)}>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handlePTZControl("zoomOut")}>
                     <ZoomOut className="h-4 w-4" />
                   </Button>
                 </div>
@@ -340,9 +358,9 @@ export function Dashboard() {
               subtitle="Macro Pad 2"
               connected={deviceState.macroPads[1]?.connected}
               encoderValue={deviceState.macroPads[1]?.encoder.value ?? 50}
-              onEncoderChange={(v) => handleEncoderChange("pad2", v)}
+              onEncoderChange={(v) => handleEncoderChange(2, v)}
               buttons={deviceState.macroPads[1]?.buttons ?? []}
-              onButtonPress={(id) => handleButtonPress("pad2", id)}
+              onButtonPress={(id) => handleButtonPress(2, id)}
               accentColor="accent"
             />
           </div>
@@ -360,6 +378,7 @@ export function Dashboard() {
                 key={effect}
                 variant="outline"
                 className="h-12 border-border/50 hover:bg-[#ed4c4c]/10 hover:border-[#ed4c4c]/50 hover:text-[#ed4c4c] transition-all"
+                onClick={() => handleEffectClick(effect)}
               >
                 <span className="text-xs">{effect}</span>
               </Button>
