@@ -21,6 +21,8 @@ const HID_DECK_B_ENCODER =
   process.env.DJ_SALLY_HID_DECK_B_ENCODER || "/dev/input/by-path/pci-0000:00:14.0-usb-0:3:1.3-event-mouse"
 const HID_DECK_A_RAW = process.env.DJ_SALLY_HID_DECK_A_RAW || "/dev/hidraw1"
 const HID_DECK_B_RAW = process.env.DJ_SALLY_HID_DECK_B_RAW || "/dev/hidraw4"
+const HID_DECK_A_RAWS = parsePathList(process.env.DJ_SALLY_HID_DECK_A_RAWS, [HID_DECK_A_RAW, "/dev/hidraw2", "/dev/hidraw3"])
+const HID_DECK_B_RAWS = parsePathList(process.env.DJ_SALLY_HID_DECK_B_RAWS, [HID_DECK_B_RAW, "/dev/hidraw5", "/dev/hidraw6"])
 const HID_BUTTON_MAP = parseButtonMap(process.env.DJ_SALLY_HID_BUTTON_MAP)
 const INPUT_EVENT_SIZE = 24
 const EV_KEY = 1
@@ -53,10 +55,12 @@ interface DeviceState {
       pad: number
       label: string
       rawPath: string
+      rawPaths?: string[]
       eventPath: string
       learnedCodes: number[]
       lastEvent: string | null
       lastHex: string | null
+      lastSource?: string | null
     }[]
   }
 }
@@ -96,20 +100,24 @@ let deviceState: DeviceState = {
       {
         pad: 1,
         label: "Deck A",
-        rawPath: HID_DECK_A_RAW,
+        rawPath: HID_DECK_A_RAWS[0] ?? HID_DECK_A_RAW,
+        rawPaths: HID_DECK_A_RAWS,
         eventPath: HID_DECK_A_KEYBOARD,
         learnedCodes: [],
         lastEvent: null,
         lastHex: null,
+        lastSource: null,
       },
       {
         pad: 2,
         label: "Deck B",
-        rawPath: HID_DECK_B_RAW,
+        rawPath: HID_DECK_B_RAWS[0] ?? HID_DECK_B_RAW,
+        rawPaths: HID_DECK_B_RAWS,
         eventPath: HID_DECK_B_KEYBOARD,
         learnedCodes: [],
         lastEvent: null,
         lastHex: null,
+        lastSource: null,
       },
     ],
   },
@@ -136,34 +144,35 @@ function startHidReaders() {
 
   startKeyboardReader(1, HID_DECK_A_KEYBOARD)
   startEncoderReader(1, HID_DECK_A_ENCODER)
-  startRawHidReader(1, HID_DECK_A_RAW)
+  for (const path of HID_DECK_A_RAWS) startRawHidReader(1, path)
   startKeyboardReader(2, HID_DECK_B_KEYBOARD)
   startEncoderReader(2, HID_DECK_B_ENCODER)
-  startRawHidReader(2, HID_DECK_B_RAW)
+  for (const path of HID_DECK_B_RAWS) startRawHidReader(2, path)
 }
 
 function startRawHidReader(pad: number, path: string) {
   if (!existsSync(path)) {
-    updateHidSetup(pad, `raw missing: ${path}`, null)
+    updateHidSetup(pad, `raw missing: ${path}`, null, path)
     console.log(`[HID] Deck ${pad} raw missing: ${path}`)
     return
   }
 
   const stream = createReadStream(path, { highWaterMark: 64 })
   stream.on("data", (chunk) => {
-    const hex = chunk.toString("hex")
-    const codes = [...chunk.subarray(3)].filter((code) => code > 0)
-    updateHidSetup(pad, codes.length ? `raw codes ${codes.join(", ")}` : "raw release", hex)
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    const hex = buffer.toString("hex")
+    const codes = [...buffer.subarray(3)].filter((code) => code > 0)
+    updateHidSetup(pad, codes.length ? `raw codes ${codes.join(", ")}` : "raw release", hex, path)
 
     for (const code of codes) {
-      pulseButton(pad, code)
+      pulseButton(pad, code, path)
     }
 
     broadcastState()
   })
 
   stream.on("open", () => {
-    updateHidSetup(pad, `raw listening: ${path}`, null)
+    updateHidSetup(pad, `raw listening: ${path}`, null, path)
     console.log(`[HID] Deck ${pad} raw listening on ${path}`)
     broadcastState()
   })
@@ -173,7 +182,7 @@ function startRawHidReader(pad: number, path: string) {
       error.code === "EACCES"
         ? `raw permission denied: ${path}`
         : `raw failed: ${path} ${error.message}`
-    updateHidSetup(pad, message, null)
+    updateHidSetup(pad, message, null, path)
     console.error(`[HID] Deck ${pad} ${message}`)
     broadcastState()
   })
@@ -200,7 +209,7 @@ function startKeyboardReader(pad: number, path: string) {
 
     deck.connected = true
     deck.buttons[button].pressed = event.value === KEY_PRESS
-    updateHidSetup(pad, `event code ${event.code} ${deck.buttons[button].pressed ? "down" : "up"}`, null)
+    updateHidSetup(pad, `event code ${event.code} ${deck.buttons[button].pressed ? "down" : "up"}`, null, path)
     console.log(
       `[HID] Deck ${pad} ${deck.buttons[button].label} ${deck.buttons[button].pressed ? "down" : "up"} code=${event.code}`
     )
@@ -234,7 +243,8 @@ function startInputReader(label: string, path: string, onEvent: (event: InputEve
   let pending = Buffer.alloc(0)
 
   stream.on("data", (chunk) => {
-    pending = Buffer.concat([pending, chunk])
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    pending = Buffer.concat([pending, buffer])
     while (pending.length >= INPUT_EVENT_SIZE) {
       const packet = pending.subarray(0, INPUT_EVENT_SIZE)
       pending = pending.subarray(INPUT_EVENT_SIZE)
@@ -281,10 +291,10 @@ function resolveButtonIndex(pad: number, code: number): number | null {
   return learned.length - 1
 }
 
-function pulseButton(pad: number, code: number) {
+function pulseButton(pad: number, code: number, source?: string) {
   const button = resolveButtonIndex(pad, code)
   if (button === null) {
-    updateHidSetup(pad, `raw unmapped code ${code}`, null)
+    updateHidSetup(pad, `raw unmapped code ${code}`, null, source)
     console.log(`[HID] Deck ${pad} raw unmapped code ${code}`)
     return
   }
@@ -294,7 +304,7 @@ function pulseButton(pad: number, code: number) {
 
   deck.connected = true
   deck.buttons[button].pressed = true
-  updateHidSetup(pad, `raw code ${code} -> ${deck.buttons[button].label}`, null)
+  updateHidSetup(pad, `raw code ${code} -> ${deck.buttons[button].label}`, null, source)
   console.log(`[HID] Deck ${pad} ${deck.buttons[button].label} pulse code=${code}`)
   setTimeout(() => {
     deck.buttons[button].pressed = false
@@ -302,11 +312,12 @@ function pulseButton(pad: number, code: number) {
   }, 180).unref()
 }
 
-function updateHidSetup(pad: number, lastEvent: string, lastHex: string | null) {
+function updateHidSetup(pad: number, lastEvent: string, lastHex: string | null, source?: string) {
   const deck = deviceState.hidSetup?.decks.find((value) => value.pad === pad)
   if (!deck) return
   deck.lastEvent = lastEvent
   if (lastHex !== null) deck.lastHex = lastHex
+  if (source) deck.lastSource = source
   deck.learnedCodes = [...(learnedButtonCodes.get(pad) ?? [])]
 }
 
@@ -330,6 +341,15 @@ function parseButtonMap(value: string | undefined): Map<string, number> {
     codes.slice(0, 3).forEach((code, index) => result.set(`${pad}:${code}`, index))
   }
   return result
+}
+
+function parsePathList(value: string | undefined, fallback: string[]) {
+  const paths = value
+    ?.split(",")
+    .map((path) => path.trim())
+    .filter(Boolean)
+
+  return paths?.length ? paths : fallback
 }
 
 function clamp(value: number, min: number, max: number) {

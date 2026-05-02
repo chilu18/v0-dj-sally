@@ -23,10 +23,12 @@ export interface DeviceState {
       pad: number
       label: string
       rawPath: string
+      rawPaths?: string[]
       eventPath: string
       learnedCodes: number[]
       lastEvent: string | null
       lastHex: string | null
+      lastSource?: string | null
     }[]
   }
 }
@@ -198,12 +200,12 @@ export function useWebSocket(): UseWebSocketReturn {
     [sendMessage]
   )
 
-  // Cleanup on unmount
   useEffect(() => {
+    connect()
     return () => {
       wsRef.current?.close()
     }
-  }, [])
+  }, [connect])
 
   return {
     status,

@@ -398,7 +398,9 @@ export function Dashboard() {
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="text-sm font-medium">{deck.label}</p>
-                    <p className="text-[11px] text-muted-foreground">{deck.rawPath || deck.eventPath}</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      {(deck.rawPaths?.length ? deck.rawPaths : [deck.rawPath || deck.eventPath]).join(", ")}
+                    </p>
                   </div>
                   <div
                     className={cn(
@@ -429,6 +431,7 @@ export function Dashboard() {
 
                 <div className="mt-3 space-y-1 font-mono text-[11px] text-muted-foreground">
                   <p>event: {deck.lastEvent ?? "waiting"}</p>
+                  <p>source: {deck.lastSource ?? "--"}</p>
                   <p className="break-all">raw: {deck.lastHex ?? "--"}</p>
                 </div>
               </div>
