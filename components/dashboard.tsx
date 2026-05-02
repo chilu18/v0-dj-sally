@@ -77,16 +77,10 @@ export function Dashboard() {
         <div className="mx-auto flex h-14 max-w-[1800px] items-center justify-between px-4">
           <div className="flex items-center gap-3">
             <div className="relative">
-              <Disc3 className="h-8 w-8 text-primary animate-spin" style={{ animationDuration: "3s" }} />
-              <div className="absolute inset-0 bg-primary/20 blur-xl rounded-full" />
+              <Disc3 className="h-10 w-10 text-[#ed4c4c] animate-spin" style={{ animationDuration: "3s" }} />
+              <div className="absolute inset-0 bg-[#ed4c4c]/20 blur-xl rounded-full" />
             </div>
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight font-[family-name:var(--font-grandstander)]">
-                <span className="text-[#ed4c4c]">Hey</span>
-                <span className="text-[#faa09a]">Salad</span>
-              </h1>
-              <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">DJ Sally Control</p>
-            </div>
+            <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">DJ Sally</p>
           </div>
 
           <div className="flex items-center gap-4">
