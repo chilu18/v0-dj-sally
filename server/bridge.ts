@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs"
+import { createReadStream, existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { WebSocketServer, WebSocket } from "ws"
 
@@ -10,6 +10,26 @@ const SALLY_DEVICE_ID = process.env.SALLY_DEVICE_ID || "sally-samsung"
 const SALLY_ADMIN_TOKEN = process.env.SALLY_ADMIN_TOKEN
 const DJ_SALLY_WS_PORT = parseInt(process.env.DJ_SALLY_WS_PORT || "8080", 10)
 const SALLY_WAIT_MS = parseInt(process.env.SALLY_WAIT_MS || "10000", 10)
+const HID_ENABLED = process.env.DJ_SALLY_HID_ENABLED !== "0"
+const HID_DECK_A_KEYBOARD =
+  process.env.DJ_SALLY_HID_DECK_A_KEYBOARD || "/dev/input/by-path/pci-0000:00:14.0-usb-0:2:1.2-event-kbd"
+const HID_DECK_A_ENCODER =
+  process.env.DJ_SALLY_HID_DECK_A_ENCODER || "/dev/input/by-path/pci-0000:00:14.0-usb-0:2:1.3-event-mouse"
+const HID_DECK_B_KEYBOARD =
+  process.env.DJ_SALLY_HID_DECK_B_KEYBOARD || "/dev/input/by-path/pci-0000:00:14.0-usb-0:3:1.2-event-kbd"
+const HID_DECK_B_ENCODER =
+  process.env.DJ_SALLY_HID_DECK_B_ENCODER || "/dev/input/by-path/pci-0000:00:14.0-usb-0:3:1.3-event-mouse"
+const HID_BUTTON_MAP = parseButtonMap(process.env.DJ_SALLY_HID_BUTTON_MAP)
+const INPUT_EVENT_SIZE = 24
+const EV_KEY = 1
+const EV_REL = 2
+const KEY_RELEASE = 0
+const KEY_PRESS = 1
+const KEY_REPEAT = 2
+const REL_X = 0
+const REL_Y = 1
+const REL_WHEEL = 8
+const MODIFIER_KEY_CODES = new Set([29, 42, 54, 56, 97, 100, 125, 126])
 
 // Device state
 interface DeviceState {
@@ -63,6 +83,145 @@ let previousVolume = 65
 
 // Connected clients
 const clients = new Set<WebSocket>()
+const learnedButtonCodes = new Map<number, number[]>()
+
+interface InputEvent {
+  type: number
+  code: number
+  value: number
+}
+
+function startHidReaders() {
+  if (!HID_ENABLED) {
+    console.log("[HID] Disabled")
+    return
+  }
+
+  startKeyboardReader(1, HID_DECK_A_KEYBOARD)
+  startEncoderReader(1, HID_DECK_A_ENCODER)
+  startKeyboardReader(2, HID_DECK_B_KEYBOARD)
+  startEncoderReader(2, HID_DECK_B_ENCODER)
+}
+
+function startKeyboardReader(pad: number, path: string) {
+  startInputReader(`Deck ${pad} keyboard`, path, (event) => {
+    if (event.type !== EV_KEY || event.value === KEY_REPEAT || MODIFIER_KEY_CODES.has(event.code)) {
+      return
+    }
+
+    const button = resolveButtonIndex(pad, event.code)
+    if (button === null) {
+      console.log(`[HID] Deck ${pad} unmapped key code ${event.code}`)
+      return
+    }
+
+    if (event.value !== KEY_PRESS && event.value !== KEY_RELEASE) {
+      return
+    }
+
+    const deck = deviceState.macroPads[pad - 1]
+    if (!deck?.buttons[button]) return
+
+    deck.connected = true
+    deck.buttons[button].pressed = event.value === KEY_PRESS
+    console.log(
+      `[HID] Deck ${pad} ${deck.buttons[button].label} ${deck.buttons[button].pressed ? "down" : "up"} code=${event.code}`
+    )
+    broadcastState()
+  })
+}
+
+function startEncoderReader(pad: number, path: string) {
+  startInputReader(`Deck ${pad} encoder`, path, (event) => {
+    if (event.type !== EV_REL || ![REL_X, REL_Y, REL_WHEEL].includes(event.code) || event.value === 0) {
+      return
+    }
+
+    const deck = deviceState.macroPads[pad - 1]
+    if (!deck) return
+
+    deck.connected = true
+    deck.encoder.value = clamp(deck.encoder.value + event.value, deck.encoder.min, deck.encoder.max)
+    console.log(`[HID] Deck ${pad} encoder value=${deck.encoder.value} code=${event.code} delta=${event.value}`)
+    broadcastState()
+  })
+}
+
+function startInputReader(label: string, path: string, onEvent: (event: InputEvent) => void) {
+  if (!existsSync(path)) {
+    console.log(`[HID] ${label} missing: ${path}`)
+    return
+  }
+
+  const stream = createReadStream(path, { highWaterMark: INPUT_EVENT_SIZE * 16 })
+  let pending = Buffer.alloc(0)
+
+  stream.on("data", (chunk) => {
+    pending = Buffer.concat([pending, chunk])
+    while (pending.length >= INPUT_EVENT_SIZE) {
+      const packet = pending.subarray(0, INPUT_EVENT_SIZE)
+      pending = pending.subarray(INPUT_EVENT_SIZE)
+      onEvent(parseInputEvent(packet))
+    }
+  })
+
+  stream.on("open", () => {
+    console.log(`[HID] ${label} listening on ${path}`)
+  })
+
+  stream.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code === "EACCES") {
+      console.error(
+        `[HID] ${label} permission denied for ${path}. Add hs-chilu to the input group or install a udev rule for 1189:8890.`
+      )
+      return
+    }
+    console.error(`[HID] ${label} failed for ${path}:`, error.message)
+  })
+}
+
+function parseInputEvent(packet: Buffer): InputEvent {
+  return {
+    type: packet.readUInt16LE(16),
+    code: packet.readUInt16LE(18),
+    value: packet.readInt32LE(20),
+  }
+}
+
+function resolveButtonIndex(pad: number, code: number): number | null {
+  const configured = HID_BUTTON_MAP.get(`${pad}:${code}`)
+  if (configured !== undefined) return configured
+
+  const learned = learnedButtonCodes.get(pad) ?? []
+  const existing = learned.indexOf(code)
+  if (existing >= 0) return existing
+  if (learned.length >= 3) return null
+
+  learned.push(code)
+  learnedButtonCodes.set(pad, learned)
+  console.log(`[HID] Deck ${pad} learned key code ${code} as button ${learned.length - 1}`)
+  return learned.length - 1
+}
+
+function parseButtonMap(value: string | undefined): Map<string, number> {
+  const result = new Map<string, number>()
+  if (!value?.trim()) return result
+
+  for (const deckPart of value.split(";")) {
+    const [deckName, codesText] = deckPart.split(":")
+    const pad = deckName?.trim().toUpperCase() === "B" ? 2 : 1
+    const codes = codesText
+      ?.split(",")
+      .map((code) => parseInt(code.trim(), 10))
+      .filter(Number.isFinite) ?? []
+    codes.slice(0, 3).forEach((code, index) => result.set(`${pad}:${code}`, index))
+  }
+  return result
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
+}
 
 // Broadcast state to all clients
 function broadcastState() {
@@ -244,6 +403,8 @@ async function handleCommand(data: Record<string, unknown>) {
 }
 
 // Create WebSocket server
+startHidReaders()
+
 const wss = new WebSocketServer({ port: DJ_SALLY_WS_PORT })
 
 console.log(`[Bridge] WebSocket server starting on port ${DJ_SALLY_WS_PORT}`)
