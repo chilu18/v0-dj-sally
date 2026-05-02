@@ -385,6 +385,56 @@ export function Dashboard() {
             ))}
           </div>
         </Card>
+
+        {/* Hardware Setup */}
+        <Card className="border-border/50 bg-card/50 backdrop-blur p-4">
+          <div className="flex items-center gap-2 mb-4">
+            <Settings className="h-4 w-4 text-primary" />
+            <span className="text-sm font-medium">Hardware Setup</span>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            {(deviceState.hidSetup?.decks ?? []).map((deck) => (
+              <div key={deck.pad} className="rounded border border-border/50 bg-secondary/20 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">{deck.label}</p>
+                    <p className="text-[11px] text-muted-foreground">{deck.rawPath || deck.eventPath}</p>
+                  </div>
+                  <div
+                    className={cn(
+                      "h-2.5 w-2.5 rounded-full",
+                      deviceState.macroPads[deck.pad - 1]?.connected ? "bg-[#ed4c4c]" : "bg-muted"
+                    )}
+                  />
+                </div>
+
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  {["CUE", "PLAY", "SYNC"].map((label, index) => (
+                    <div
+                      key={label}
+                      className={cn(
+                        "rounded border border-border/50 px-2 py-2 text-center",
+                        deviceState.macroPads[deck.pad - 1]?.buttons[index]?.pressed
+                          ? "bg-[#ed4c4c] text-white"
+                          : "bg-background/50"
+                      )}
+                    >
+                      <p className="text-xs font-medium">{label}</p>
+                      <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+                        {deck.learnedCodes[index] ?? "--"}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-3 space-y-1 font-mono text-[11px] text-muted-foreground">
+                  <p>event: {deck.lastEvent ?? "waiting"}</p>
+                  <p className="break-all">raw: {deck.lastHex ?? "--"}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
       </main>
 
       {/* Footer */}
@@ -420,7 +470,7 @@ function DeckCard({
   connected?: boolean
   encoderValue: number
   onEncoderChange: (value: number) => void
-  buttons: { id: number; active: boolean; label: string }[]
+  buttons: { id: number; pressed?: boolean; active?: boolean; label: string }[]
   onButtonPress: (id: number) => void
   accentColor: "primary" | "accent"
 }) {
@@ -481,17 +531,17 @@ function DeckCard({
         {(buttons.length > 0 ? buttons : Array(4).fill({ id: 0, active: false, label: "" })).map((btn, i) => (
           <Button
             key={i}
-            variant={btn.active ? "default" : "outline"}
+            variant={btn.pressed || btn.active ? "default" : "outline"}
             className={cn(
               "h-12 p-0 border-border/50 transition-all",
-              btn.active && (accentColor === "primary"
+              (btn.pressed || btn.active) && (accentColor === "primary"
                 ? "bg-[#ed4c4c] text-white shadow-lg shadow-[#ed4c4c]/25"
                 : "bg-[#faa09a] text-black shadow-lg shadow-[#faa09a]/25"),
-              !btn.active && "hover:bg-secondary"
+              !(btn.pressed || btn.active) && "hover:bg-secondary"
             )}
             onClick={() => onButtonPress(btn.id || i)}
           >
-            <span className="text-xs font-mono">{i + 1}</span>
+            <span className="text-xs font-mono">{btn.label || i + 1}</span>
           </Button>
         ))}
       </div>

@@ -17,6 +17,18 @@ export interface DeviceState {
     encoder: { value: number; min: number; max: number }
   }[]
   speaker: { connected: boolean; volume: number; muted: boolean }
+  hidSetup?: {
+    enabled: boolean
+    decks: {
+      pad: number
+      label: string
+      rawPath: string
+      eventPath: string
+      learnedCodes: number[]
+      lastEvent: string | null
+      lastHex: string | null
+    }[]
+  }
 }
 
 const initialState: DeviceState = {
@@ -48,6 +60,13 @@ const initialState: DeviceState = {
     },
   ],
   speaker: { connected: false, volume: 65, muted: false },
+  hidSetup: {
+    enabled: false,
+    decks: [
+      { pad: 1, label: "Deck A", rawPath: "", eventPath: "", learnedCodes: [], lastEvent: null, lastHex: null },
+      { pad: 2, label: "Deck B", rawPath: "", eventPath: "", learnedCodes: [], lastEvent: null, lastHex: null },
+    ],
+  },
 }
 
 // Default WebSocket URL from environment or fallback
