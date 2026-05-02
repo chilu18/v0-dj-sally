@@ -10,12 +10,12 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
-  themeColor: "#1a1a2e",
+  themeColor: "#0d0d1a",
 }
 
 export const metadata: Metadata = {
-  title: 'HeySalad Control Hub',
-  description: 'Hardware control dashboard for Raspberry Pi IoT devices',
+  title: 'DJ Sally',
+  description: 'Professional DJ control interface for Raspberry Pi hardware',
   generator: 'v0.app',
   icons: {
     icon: [
