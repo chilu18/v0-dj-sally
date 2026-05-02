@@ -81,10 +81,11 @@ export function Dashboard() {
               <div className="absolute inset-0 bg-primary/20 blur-xl rounded-full" />
             </div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-primary via-accent to-primary bg-clip-text text-transparent">
-                DJ Sally
+              <h1 className="text-2xl font-bold tracking-tight font-[family-name:var(--font-grandstander)]">
+                <span className="text-[#ed4c4c]">Hey</span>
+                <span className="text-[#faa09a]">Salad</span>
               </h1>
-              <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Control Interface</p>
+              <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">DJ Sally Control</p>
             </div>
           </div>
 
@@ -130,7 +131,7 @@ export function Dashboard() {
                 className="w-2 rounded-t transition-all duration-75"
                 style={{
                   height: `${Math.max(4, height)}%`,
-                  background: `linear-gradient(to top, hsl(var(--primary)), hsl(var(--accent)))`,
+                  background: `linear-gradient(to top, #ed4c4c, #ffd0cd)`,
                   opacity: 0.6 + (height / 200),
                 }}
               />
@@ -142,7 +143,7 @@ export function Dashboard() {
             </Button>
             <Button
               size="icon"
-              className="h-14 w-14 rounded-full bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/25"
+              className="h-14 w-14 rounded-full bg-[#ed4c4c] hover:bg-[#ed4c4c]/90 text-white shadow-lg shadow-[#ed4c4c]/25"
               onClick={() => setIsPlaying(!isPlaying)}
             >
               {isPlaying ? <Pause className="h-6 w-6" /> : <Play className="h-6 w-6 ml-0.5" />}
@@ -197,7 +198,7 @@ export function Dashboard() {
                 <div className="flex-1 flex items-center gap-3">
                   <div className="flex-1 h-3 rounded-full bg-secondary overflow-hidden">
                     <div
-                      className="h-full rounded-full bg-gradient-to-r from-primary to-accent transition-all"
+                      className="h-full rounded-full bg-gradient-to-r from-[#ed4c4c] to-[#faa09a] transition-all"
                       style={{ width: `${deviceState.speaker.volume}%` }}
                     />
                   </div>
@@ -224,10 +225,10 @@ export function Dashboard() {
                       "flex-1 h-2 rounded-sm transition-all",
                       i < (deviceState.speaker.volume / 5)
                         ? i > 15
-                          ? "bg-destructive"
+                          ? "bg-[#ed4c4c]"
                           : i > 12
-                            ? "bg-yellow-500"
-                            : "bg-primary"
+                            ? "bg-[#faa09a]"
+                            : "bg-[#ffd0cd]"
                         : "bg-secondary"
                     )}
                   />
@@ -364,7 +365,7 @@ export function Dashboard() {
               <Button
                 key={effect}
                 variant="outline"
-                className="h-12 border-border/50 hover:bg-primary/10 hover:border-primary/50 hover:text-primary transition-all"
+                className="h-12 border-border/50 hover:bg-[#ed4c4c]/10 hover:border-[#ed4c4c]/50 hover:text-[#ed4c4c] transition-all"
               >
                 <span className="text-xs">{effect}</span>
               </Button>
@@ -415,14 +416,14 @@ function DeckCard({
       <div className="flex items-center justify-between mb-4">
         <div>
           <h3 className={cn(
-            "text-lg font-bold",
-            accentColor === "primary" ? "text-primary" : "text-accent"
+            "text-lg font-bold font-[family-name:var(--font-grandstander)]",
+            accentColor === "primary" ? "text-[#ed4c4c]" : "text-[#faa09a]"
           )}>{title}</h3>
           <p className="text-xs text-muted-foreground">{subtitle}</p>
         </div>
         <div className={cn(
           "h-2 w-2 rounded-full",
-          connected ? (accentColor === "primary" ? "bg-primary" : "bg-accent") : "bg-muted"
+          connected ? (accentColor === "primary" ? "bg-[#ed4c4c]" : "bg-[#faa09a]") : "bg-muted"
         )} />
       </div>
 
@@ -432,16 +433,16 @@ function DeckCard({
         <div
           className={cn(
             "absolute inset-2 rounded-full border-2",
-            accentColor === "primary" ? "border-primary/30" : "border-accent/30"
+            accentColor === "primary" ? "border-[#ed4c4c]/30" : "border-[#faa09a]/30"
           )}
           style={{
-            background: `conic-gradient(from ${encoderValue * 3.6}deg, transparent, ${accentColor === "primary" ? "hsl(var(--primary))" : "hsl(var(--accent))"} 10%, transparent 20%)`,
+            background: `conic-gradient(from ${encoderValue * 3.6}deg, transparent, ${accentColor === "primary" ? "#ed4c4c" : "#faa09a"} 10%, transparent 20%)`,
           }}
         />
         <div className="absolute inset-8 rounded-full bg-card border border-border/50 flex items-center justify-center">
           <Disc3 className={cn(
             "h-12 w-12",
-            accentColor === "primary" ? "text-primary/50" : "text-accent/50"
+            accentColor === "primary" ? "text-[#ed4c4c]/50" : "text-[#faa09a]/50"
           )} />
         </div>
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-foreground" />
@@ -458,7 +459,7 @@ function DeckCard({
           onValueChange={([v]) => onEncoderChange(v)}
           max={100}
           step={1}
-          className={accentColor === "primary" ? "[&_[role=slider]]:bg-primary" : "[&_[role=slider]]:bg-accent"}
+          className={accentColor === "primary" ? "[&_[role=slider]]:bg-[#ed4c4c]" : "[&_[role=slider]]:bg-[#faa09a]"}
         />
       </div>
 
@@ -471,8 +472,8 @@ function DeckCard({
             className={cn(
               "h-12 p-0 border-border/50 transition-all",
               btn.active && (accentColor === "primary"
-                ? "bg-primary text-primary-foreground shadow-lg shadow-primary/25"
-                : "bg-accent text-accent-foreground shadow-lg shadow-accent/25"),
+                ? "bg-[#ed4c4c] text-white shadow-lg shadow-[#ed4c4c]/25"
+                : "bg-[#faa09a] text-black shadow-lg shadow-[#faa09a]/25"),
               !btn.active && "hover:bg-secondary"
             )}
             onClick={() => onButtonPress(btn.id || i)}
@@ -500,7 +501,7 @@ function StatusItem({
       <p className="text-xs text-muted-foreground mb-1">{label}</p>
       <p className={cn(
         "text-lg font-mono font-bold",
-        color === "primary" ? "text-primary" : "text-destructive"
+        color === "primary" ? "text-[#ed4c4c]" : "text-[#faa09a]"
       )}>{value}</p>
     </div>
   )
