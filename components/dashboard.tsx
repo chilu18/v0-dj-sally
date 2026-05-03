@@ -414,9 +414,9 @@ export function Dashboard() {
                 </div>
 
                 <div className="mt-3 grid grid-cols-3 gap-2">
-                  {["CUE", "PLAY", "SYNC"].map((label, index) => (
+                  {getDeckButtonMapping(deck.pad).map((control, index) => (
                     <div
-                      key={label}
+                      key={control.label}
                       className={cn(
                         "rounded border border-border/50 px-2 py-2 text-center",
                         deviceState.macroPads[deck.pad - 1]?.buttons[index]?.pressed
@@ -424,9 +424,27 @@ export function Dashboard() {
                           : "bg-background/50"
                       )}
                     >
-                      <p className="text-xs font-medium">{label}</p>
+                      <p className="text-xs font-medium">{control.label}</p>
+                      <p className="mt-0.5 text-[10px] text-muted-foreground">{control.position}</p>
                       <p className="mt-1 font-mono text-[11px] text-muted-foreground">
-                        {deck.learnedCodes[index] ?? "--"}
+                        {control.key} / {control.code}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  {getDeckKnobMapping(deck.pad).map((control) => (
+                    <div
+                      key={control.label}
+                      className={cn(
+                        "rounded border border-border/50 px-2 py-2 text-center",
+                        deck.lastKnob?.includes(control.match) ? "bg-[#ed4c4c] text-white" : "bg-background/50"
+                      )}
+                    >
+                      <p className="text-xs font-medium">{control.label}</p>
+                      <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+                        {control.key} / {control.code}
                       </p>
                     </div>
                   ))}
@@ -459,6 +477,34 @@ export function Dashboard() {
       </footer>
     </div>
   )
+}
+
+function getDeckButtonMapping(pad: number) {
+  return pad === 1
+    ? [
+        { label: "CUE", position: "farthest", key: "F13", code: 183 },
+        { label: "PLAY", position: "middle", key: "F14", code: 184 },
+        { label: "SYNC", position: "closest", key: "F15", code: 185 },
+      ]
+    : [
+        { label: "CUE", position: "farthest", key: "F19", code: 189 },
+        { label: "PLAY", position: "middle", key: "F20", code: 190 },
+        { label: "SYNC", position: "closest", key: "F21", code: 191 },
+      ]
+}
+
+function getDeckKnobMapping(pad: number) {
+  return pad === 1
+    ? [
+        { label: "Knob Left", key: "F16", code: 186, match: "rotate left" },
+        { label: "Knob Click", key: "F17", code: 187, match: "knob click" },
+        { label: "Knob Right", key: "F18", code: 188, match: "rotate right" },
+      ]
+    : [
+        { label: "Knob Left", key: "F22", code: 192, match: "rotate left" },
+        { label: "Knob Click", key: "F23", code: 193, match: "knob click" },
+        { label: "Knob Right", key: "F24", code: 194, match: "rotate right" },
+      ]
 }
 
 // Deck Card Component
