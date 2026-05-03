@@ -48,6 +48,20 @@ const REL_WHEEL = 8
 const BTN_LEFT = 272
 const BTN_MIDDLE = 274
 const MODIFIER_KEY_CODES = new Set([29, 42, 54, 56, 97, 100, 125, 126])
+const PROGRAMMED_KEY_CONTROLS = new Map<string, { kind: "button" | "knob"; button?: number; direction?: "left" | "right"; pressed?: boolean }>([
+  ["1:183", { kind: "button", button: 0 }],
+  ["1:184", { kind: "button", button: 1 }],
+  ["1:185", { kind: "button", button: 2 }],
+  ["1:186", { kind: "knob", direction: "left" }],
+  ["1:187", { kind: "knob", pressed: true }],
+  ["1:188", { kind: "knob", direction: "right" }],
+  ["2:189", { kind: "button", button: 0 }],
+  ["2:190", { kind: "button", button: 1 }],
+  ["2:191", { kind: "button", button: 2 }],
+  ["2:192", { kind: "knob", direction: "left" }],
+  ["2:193", { kind: "knob", pressed: true }],
+  ["2:194", { kind: "knob", direction: "right" }],
+])
 
 // Device state
 interface DeviceState {
@@ -188,10 +202,6 @@ function startRawHidReader(pad: number, path: string) {
     const codes = [...buffer.subarray(3)].filter((code) => code > 0)
     updateHidSetup(pad, codes.length ? `raw codes ${codes.join(", ")}` : "raw release", hex, path)
 
-    for (const code of codes) {
-      pulseButton(pad, code, path)
-    }
-
     broadcastState()
   })
 
@@ -218,6 +228,10 @@ function startKeyboardReader(pad: number, path: string) {
       return
     }
 
+    if (handleProgrammedKeyControl(pad, event, path)) {
+      return
+    }
+
     const button = resolveButtonIndex(pad, event.code)
     if (button === null) {
       console.log(`[HID] Deck ${pad} unmapped key code ${event.code}`)
@@ -239,6 +253,56 @@ function startKeyboardReader(pad: number, path: string) {
     )
     broadcastState()
   })
+}
+
+function handleProgrammedKeyControl(pad: number, event: InputEvent, path: string) {
+  const control = PROGRAMMED_KEY_CONTROLS.get(`${pad}:${event.code}`)
+  if (!control) return false
+
+  const deck = deviceState.macroPads[pad - 1]
+  if (!deck) return true
+
+  deck.connected = true
+  if (control.kind === "button" && control.button !== undefined && deck.buttons[control.button]) {
+    deck.buttons[control.button].pressed = event.value === KEY_PRESS
+    updateHidSetup(
+      pad,
+      `programmed ${deck.buttons[control.button].label} ${deck.buttons[control.button].pressed ? "down" : "up"} code=${event.code}`,
+      null,
+      path
+    )
+    console.log(
+      `[HID] Deck ${pad} programmed ${deck.buttons[control.button].label} ${deck.buttons[control.button].pressed ? "down" : "up"} code=${event.code}`
+    )
+    broadcastState()
+    return true
+  }
+
+  if (control.kind === "knob" && event.value === KEY_PRESS) {
+    if (control.pressed) {
+      knobPressed.set(pad, true)
+      updateHidKnob(pad, `programmed knob click code=${event.code}`, true, path)
+    } else if (control.direction) {
+      const held = knobPressed.get(pad) === true
+      deck.encoder.value = clamp(
+        deck.encoder.value + (control.direction === "right" ? 1 : -1),
+        deck.encoder.min,
+        deck.encoder.max
+      )
+      updateHidKnob(pad, `programmed ${held ? "click+" : ""}rotate ${control.direction} code=${event.code}`, held, path)
+    }
+    broadcastState()
+    return true
+  }
+
+  if (control.kind === "knob" && control.pressed && event.value === KEY_RELEASE) {
+    knobPressed.set(pad, false)
+    updateHidKnob(pad, `programmed knob click up code=${event.code}`, false, path)
+    broadcastState()
+    return true
+  }
+
+  return true
 }
 
 function startEncoderReader(pad: number, path: string) {
