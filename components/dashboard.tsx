@@ -28,7 +28,37 @@ import {
   ChevronRight,
   ZoomIn,
   ZoomOut,
+  RotateCcw,
+  SlidersHorizontal,
 } from "lucide-react"
+
+const CURRENT_PLAYLIST_URI = "spotify:playlist:1oT190vGpWmZY7NPhndFUM"
+const BAMBOO_VOLUME_PRESET = 24
+
+type SallyCommand = {
+  type: string
+  [key: string]: unknown
+}
+
+type DeckTrack = {
+  id?: string
+  name: string
+  uri: string
+  artists: string[]
+  album: string | null
+  image?: string | null
+}
+
+type SpotifyDeckState = {
+  isPlaying: boolean
+  deviceName: string | null
+  contextUri: string | null
+  contextType: string | null
+  nowPlaying: DeckTrack | null
+  incoming: DeckTrack | null
+  queue: DeckTrack[]
+  updatedAt: string | null
+}
 
 export function Dashboard() {
   const { 
@@ -47,6 +77,33 @@ export function Dashboard() {
   const [isPlaying, setIsPlaying] = useState(false)
   const [bpm, setBpm] = useState(128)
   const [waveformBars, setWaveformBars] = useState<number[]>(Array(32).fill(0))
+  const [commandPending, setCommandPending] = useState<string | null>(null)
+  const [commandStatus, setCommandStatus] = useState("Ready")
+  const [crossfader, setCrossfader] = useState(0)
+  const [deckAGain, setDeckAGain] = useState(100)
+  const [deckBGain, setDeckBGain] = useState(0)
+  const [transitionCurve, setTransitionCurve] = useState(50)
+  const [spotifySnapshot, setSpotifySnapshot] = useState<SpotifyDeckState | null>(null)
+  const [outputVolumeSnapshot, setOutputVolumeSnapshot] = useState<number | null>(null)
+  const spotifyState = spotifySnapshot ?? deviceState.spotify
+  const nowPlaying = spotifyState.nowPlaying
+  const incomingTrack = spotifyState.incoming ?? getIncomingFallback(nowPlaying)
+  const deckABalance = 100 - crossfader
+  const deckBBalance = crossfader
+  const outputVolume = outputVolumeSnapshot ?? deviceState.speaker.volume
+
+  const applySallyPayloadSnapshots = useCallback((payload: unknown) => {
+    const spotify = normalizeSpotifyDeckState(payload)
+    if (spotify) {
+      setSpotifySnapshot(spotify)
+      setIsPlaying(spotify.isPlaying)
+    }
+
+    const outputVolume = normalizeOutputVolume(payload)
+    if (typeof outputVolume === "number") {
+      setOutputVolumeSnapshot(outputVolume)
+    }
+  }, [])
 
   // Animate waveform
   useEffect(() => {
@@ -57,6 +114,35 @@ export function Dashboard() {
     }, 50)
     return () => clearInterval(interval)
   }, [status, isPlaying])
+
+  useEffect(() => {
+    let cancelled = false
+
+    const refreshSpotifyDecks = async () => {
+      try {
+        const response = await fetch("/api/local/command", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "status" }),
+        })
+        const payload = await response.json().catch(() => null)
+        if (!response.ok || !payload || cancelled) return
+        applySallyPayloadSnapshots(payload)
+      } catch {
+        // Keep the last deck snapshot; local Sally may be offline on deployed previews.
+      }
+    }
+
+    void refreshSpotifyDecks()
+    const interval = setInterval(() => {
+      void refreshSpotifyDecks()
+    }, 10000)
+
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [applySallyPayloadSnapshots])
 
   const handlePTZControl = (action: "up" | "down" | "left" | "right" | "zoomIn" | "zoomOut") => {
     sendPTZ(action)
@@ -71,6 +157,7 @@ export function Dashboard() {
   }
 
   const handleVolumeChange = (value: number) => {
+    setOutputVolumeSnapshot(value)
     sendVolume(value)
   }
 
@@ -86,6 +173,67 @@ export function Dashboard() {
 
   const handleEffectClick = (effectName: string) => {
     sendEffect(effectName.toLowerCase())
+  }
+
+  const handleRemoteCommand = useCallback(async (command: SallyCommand, label: string) => {
+    setCommandPending(command.type)
+    setCommandStatus(`${label} sending`)
+
+    try {
+      const response = await fetch("/api/local/command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(command),
+      })
+      const result = await response.json().catch(() => ({}))
+      const remoteResult = result?.result as { ok?: boolean; error?: string } | undefined
+
+      if (!response.ok || remoteResult?.ok === false) {
+        const error = remoteResult?.error || result?.error || "Unavailable"
+        setCommandStatus(`${label}: ${error}`)
+        return
+      }
+
+      applySallyPayloadSnapshots(result)
+      setCommandStatus(`${label} sent`)
+    } catch (error) {
+      setCommandStatus(`${label}: ${error instanceof Error ? error.message : "failed"}`)
+    } finally {
+      setCommandPending(null)
+    }
+  }, [applySallyPayloadSnapshots])
+
+  const handleResumeClick = () => {
+    handleTransport("play")
+    void handleRemoteCommand({ type: "spotify_resume" }, "Resume")
+  }
+
+  const handlePauseClick = () => {
+    handleTransport("pause")
+    void handleRemoteCommand({ type: "spotify_pause" }, "Pause")
+  }
+
+  const handleNextClick = () => {
+    handleTransport("skipForward")
+    void handleRemoteCommand({ type: "spotify_next" }, "Next")
+  }
+
+  const handleVolumePresetClick = () => {
+    handleVolumeChange(BAMBOO_VOLUME_PRESET)
+    void handleRemoteCommand({ type: "set_volume", percent: BAMBOO_VOLUME_PRESET }, `Volume ${BAMBOO_VOLUME_PRESET}%`)
+  }
+
+  const handleCrossfaderChange = (value: number) => {
+    setCrossfader(value)
+    setDeckAGain(Math.max(0, 100 - value))
+    setDeckBGain(value)
+  }
+
+  const handleAutoTransition = () => {
+    setCrossfader(50)
+    setDeckAGain(70)
+    setDeckBGain(70)
+    setCommandStatus("Transition staged")
   }
 
   return (
@@ -166,30 +314,133 @@ export function Dashboard() {
           </div>
         </Card>
 
+        {/* Sally Remote Controls */}
+        <Card className="border-border/50 bg-card/50 backdrop-blur p-3">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="flex min-w-0 items-center gap-2">
+              <Radio className="h-4 w-4 text-primary" />
+              <span className="shrink-0 text-sm font-medium">Sally Remote</span>
+              <span className="min-w-0 truncate text-xs text-muted-foreground">{commandStatus}</span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+              <Button variant="outline" size="sm" className="gap-2" onClick={handleResumeClick}>
+                <Play className="h-4 w-4" />
+                Resume
+              </Button>
+              <Button variant="outline" size="sm" className="gap-2" onClick={handlePauseClick}>
+                <Pause className="h-4 w-4" />
+                Pause
+              </Button>
+              <Button variant="outline" size="sm" className="gap-2" onClick={handleNextClick}>
+                <SkipForward className="h-4 w-4" />
+                Next
+              </Button>
+              <Button variant="outline" size="sm" className="gap-2" onClick={handleVolumePresetClick}>
+                <Volume2 className="h-4 w-4" />
+                {BAMBOO_VOLUME_PRESET}%
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                disabled={commandPending === "open_spotify"}
+                onClick={() => void handleRemoteCommand({ type: "open_spotify", uri: CURRENT_PLAYLIST_URI }, "Playlist")}
+              >
+                <Music className="h-4 w-4" />
+                Playlist
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                disabled={commandPending === "recover_playback"}
+                onClick={() => void handleRemoteCommand({ type: "recover_playback" }, "Recover")}
+              >
+                <RotateCcw className="h-4 w-4" />
+                Recover
+              </Button>
+            </div>
+          </div>
+        </Card>
+
         {/* Main Grid */}
         <div className="grid gap-4 lg:grid-cols-12">
           {/* Left Deck - Macro Pad 1 */}
           <div className="lg:col-span-4 space-y-4">
             <DeckCard
               title="Deck A"
-              subtitle="Macro Pad 1"
+              subtitle="Now Playing"
               connected={deviceState.macroPads[0]?.connected}
               encoderValue={deviceState.macroPads[0]?.encoder.value ?? 50}
               onEncoderChange={(v) => handleEncoderChange(1, v)}
               buttons={deviceState.macroPads[0]?.buttons ?? []}
               onButtonPress={(id) => handleButtonPress(1, id)}
               accentColor="primary"
+              track={nowPlaying}
+              deckRole="live"
+              isPlaying={spotifyState.isPlaying || isPlaying}
+              contextLabel={formatContextLabel(spotifyState.contextType, spotifyState.contextUri)}
+              level={Math.round((deckABalance * deckAGain) / 100)}
+              onPrimaryAction={handleResumeClick}
+              primaryActionLabel="Resume"
             />
           </div>
 
           {/* Center - Mixer & Cameras */}
           <div className="lg:col-span-4 space-y-4">
+            {/* Virtual Mixer */}
+            <Card className="border-border/50 bg-card/50 backdrop-blur p-4">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <SlidersHorizontal className="h-4 w-4 text-primary" />
+                  <span className="text-sm font-medium">Virtual Mixer</span>
+                </div>
+                <span className="rounded border border-border/50 bg-secondary/30 px-2 py-1 font-mono text-xs text-muted-foreground">
+                  A {deckABalance}% / B {deckBBalance}%
+                </span>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+                    <span>Crossfader</span>
+                    <span className="font-mono">{crossfader < 50 ? "Deck A" : crossfader > 50 ? "Deck B" : "Blend"}</span>
+                  </div>
+                  <Slider value={[crossfader]} onValueChange={([v]) => handleCrossfaderChange(v)} max={100} step={1} />
+                  <div className="mt-1 flex justify-between text-[10px] text-muted-foreground">
+                    <span>A</span>
+                    <span>B</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <DeckMixControl label="Deck A" value={deckAGain} onChange={setDeckAGain} />
+                  <DeckMixControl label="Deck B" value={deckBGain} onChange={setDeckBGain} />
+                </div>
+
+                <div>
+                  <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+                    <span>Transition Curve</span>
+                    <span className="font-mono">{transitionCurve}%</span>
+                  </div>
+                  <Slider value={[transitionCurve]} onValueChange={([v]) => setTransitionCurve(v)} max={100} step={1} />
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <Button variant="outline" size="sm" onClick={() => handleCrossfaderChange(0)}>Cut A</Button>
+                  <Button variant="outline" size="sm" onClick={handleAutoTransition}>Blend</Button>
+                  <Button variant="outline" size="sm" onClick={() => handleCrossfaderChange(100)}>Cut B</Button>
+                </div>
+              </div>
+            </Card>
+
             {/* Master Volume */}
             <Card className="border-border/50 bg-card/50 backdrop-blur p-4">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
                   <Volume2 className="h-4 w-4 text-primary" />
-                  <span className="text-sm font-medium">Master Output</span>
+                  <span className="text-sm font-medium">Bamboo / Samsung Output</span>
                 </div>
                 <Button
                   variant="ghost"
@@ -211,17 +462,17 @@ export function Dashboard() {
                   <div className="flex-1 h-3 rounded-full bg-secondary overflow-hidden">
                     <div
                       className="h-full rounded-full bg-gradient-to-r from-[#ed4c4c] to-[#faa09a] transition-all"
-                      style={{ width: `${deviceState.speaker.volume}%` }}
+                      style={{ width: `${outputVolume}%` }}
                     />
                   </div>
                   <span className="text-sm font-mono w-10 text-right text-muted-foreground">
-                    {deviceState.speaker.volume}%
+                    {outputVolume}%
                   </span>
                 </div>
               </div>
 
               <Slider
-                value={[deviceState.speaker.volume]}
+                value={[outputVolume]}
                 onValueChange={([v]) => handleVolumeChange(v)}
                 max={100}
                 step={1}
@@ -235,7 +486,7 @@ export function Dashboard() {
                     key={i}
                     className={cn(
                       "flex-1 h-2 rounded-sm transition-all",
-                      i < (deviceState.speaker.volume / 5)
+                      i < (outputVolume / 5)
                         ? i > 15
                           ? "bg-[#ed4c4c]"
                           : i > 12
@@ -355,13 +606,20 @@ export function Dashboard() {
           <div className="lg:col-span-4 space-y-4">
             <DeckCard
               title="Deck B"
-              subtitle="Macro Pad 2"
+              subtitle="Incoming"
               connected={deviceState.macroPads[1]?.connected}
               encoderValue={deviceState.macroPads[1]?.encoder.value ?? 50}
               onEncoderChange={(v) => handleEncoderChange(2, v)}
               buttons={deviceState.macroPads[1]?.buttons ?? []}
               onButtonPress={(id) => handleButtonPress(2, id)}
               accentColor="accent"
+              track={incomingTrack}
+              deckRole={spotifyState.incoming ? "queued" : "standby"}
+              isPlaying={false}
+              contextLabel={spotifyState.incoming ? "Spotify Queue" : "Playlist Cue"}
+              level={Math.round((deckBBalance * deckBGain) / 100)}
+              onPrimaryAction={() => void handleRemoteCommand({ type: "spotify_next" }, "Next")}
+              primaryActionLabel="Play Next"
             />
           </div>
         </div>
@@ -385,6 +643,81 @@ export function Dashboard() {
             ))}
           </div>
         </Card>
+
+        {/* Hardware Setup */}
+        <Card className="border-border/50 bg-card/50 backdrop-blur p-4">
+          <div className="flex items-center gap-2 mb-4">
+            <Settings className="h-4 w-4 text-primary" />
+            <span className="text-sm font-medium">Hardware Setup</span>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            {(deviceState.hidSetup?.decks ?? []).map((deck) => (
+              <div key={deck.pad} className="rounded border border-border/50 bg-secondary/20 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">{deck.label}</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      events: {(deck.eventPaths?.length ? deck.eventPaths : [deck.eventPath]).join(", ")}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      raw: {(deck.rawPaths?.length ? deck.rawPaths : [deck.rawPath]).join(", ")}
+                    </p>
+                  </div>
+                  <div
+                    className={cn(
+                      "h-2.5 w-2.5 rounded-full",
+                      deviceState.macroPads[deck.pad - 1]?.connected ? "bg-[#ed4c4c]" : "bg-muted"
+                    )}
+                  />
+                </div>
+
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  {getDeckButtonMapping(deck.pad).map((control, index) => (
+                    <div
+                      key={control.label}
+                      className={cn(
+                        "rounded border border-border/50 px-2 py-2 text-center",
+                        deviceState.macroPads[deck.pad - 1]?.buttons[index]?.pressed
+                          ? "bg-[#ed4c4c] text-white"
+                          : "bg-background/50"
+                      )}
+                    >
+                      <p className="text-xs font-medium">{control.label}</p>
+                      <p className="mt-0.5 text-[10px] text-muted-foreground">{control.position}</p>
+                      <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+                        {control.key} / {control.code}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  {getDeckKnobMapping(deck.pad).map((control) => (
+                    <div
+                      key={control.label}
+                      className={cn(
+                        "rounded border border-border/50 px-2 py-2 text-center",
+                        deck.lastKnob?.includes(control.match) ? "bg-[#ed4c4c] text-white" : "bg-background/50"
+                      )}
+                    >
+                      <p className="text-xs font-medium">{control.label}</p>
+                      <p className="mt-1 font-mono text-[11px] text-muted-foreground">
+                        {control.key} / {control.code}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-3 space-y-1 font-mono text-[11px] text-muted-foreground">
+                  <p>event: {deck.lastEvent ?? "waiting"}</p>
+                  <p>knob: {deck.lastKnob ?? "waiting"} {deck.knobPressed ? "(held)" : ""}</p>
+                  <p>source: {deck.lastSource ?? "--"}</p>
+                  <p className="break-all">raw: {deck.lastHex ?? "--"}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
       </main>
 
       {/* Footer */}
@@ -404,6 +737,199 @@ export function Dashboard() {
   )
 }
 
+function getDeckButtonMapping(pad: number) {
+  return pad === 1
+    ? [
+        { label: "CUE", position: "farthest", key: "F13", code: 183 },
+        { label: "PLAY", position: "middle", key: "F14", code: 184 },
+        { label: "SYNC", position: "closest", key: "F15", code: 185 },
+      ]
+    : [
+        { label: "CUE", position: "farthest", key: "F19", code: 189 },
+        { label: "PLAY", position: "middle", key: "F20", code: 190 },
+        { label: "SYNC", position: "closest", key: "F21", code: 191 },
+      ]
+}
+
+function getDeckKnobMapping(pad: number) {
+  return pad === 1
+    ? [
+        { label: "Knob Left", key: "F16", code: 186, match: "rotate left" },
+        { label: "Knob Click", key: "F17", code: 187, match: "knob click" },
+        { label: "Knob Right", key: "F18", code: 188, match: "rotate right" },
+      ]
+    : [
+        { label: "Knob Left", key: "F22", code: 192, match: "rotate left" },
+        { label: "Knob Click", key: "F23", code: 193, match: "knob click" },
+        { label: "Knob Right", key: "F24", code: 194, match: "rotate right" },
+      ]
+}
+
+function getIncomingFallback(nowPlaying: DeckTrack | null): DeckTrack {
+  return {
+    name: nowPlaying ? "Next from UK Garage and Bassline Bangers" : "UK Garage and Bassline Bangers",
+    uri: CURRENT_PLAYLIST_URI,
+    artists: nowPlaying ? ["Spotify playlist queue"] : ["Ready to load"],
+    album: "Incoming cue",
+    image: null,
+  }
+}
+
+function formatContextLabel(type: string | null, uri: string | null) {
+  if (!type && !uri) return "Spotify"
+  if (!uri) return type ?? "Spotify"
+  const id = uri.split(":").at(-1)
+  return `${type ?? "context"} ${id?.slice(0, 8) ?? ""}`.trim()
+}
+
+function normalizeSpotifyDeckState(payload: unknown): SpotifyDeckState | null {
+  const spotify = findSpotifyObject(payload, new Set())
+  if (!spotify) return null
+
+  const queue = arrayField(spotify, "queue").flatMap((item) => {
+    const track = normalizeDeckTrack(item)
+    return track ? [track] : []
+  })
+  const nowPlaying = normalizeDeckTrack(spotify.track)
+  const incoming = queue.find((track) => track.uri !== nowPlaying?.uri) ?? null
+  const device = objectField(spotify, "device")
+  const context = objectField(spotify, "context")
+
+  return {
+    isPlaying: Boolean(spotify.isPlaying),
+    deviceName: stringField(device, "name"),
+    contextUri: stringField(context, "uri"),
+    contextType: stringField(context, "type"),
+    nowPlaying,
+    incoming,
+    queue,
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+function normalizeOutputVolume(payload: unknown): number | null {
+  const volume = findOutputVolumeObject(payload, new Set())
+  if (typeof volume === "number") return clampPercent(volume)
+  if (!volume) return null
+
+  return (
+    numberField(volume, "effective_percent") ??
+    numberField(volume, "android_music_percent") ??
+    numberField(volume, "percent") ??
+    numberField(volume, "current") ??
+    null
+  )
+}
+
+function findSpotifyObject(value: unknown, seen: Set<object>): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") return null
+  const object = value as Record<string, unknown>
+  if (seen.has(object)) return null
+  seen.add(object)
+
+  if ("isPlaying" in object && ("track" in object || "queue" in object || "context" in object)) {
+    return object
+  }
+
+  for (const key of ["spotify", "result", "status", "lastStatus"]) {
+    const child = object[key]
+    const found = findSpotifyObject(child, seen)
+    if (found) return found
+  }
+
+  for (const child of Object.values(object)) {
+    const found = findSpotifyObject(child, seen)
+    if (found) return found
+  }
+  return null
+}
+
+function findOutputVolumeObject(value: unknown, seen: Set<object>): Record<string, unknown> | number | null {
+  if (typeof value === "number") return value
+  if (!value || typeof value !== "object") return null
+
+  const object = value as Record<string, unknown>
+  if (seen.has(object)) return null
+  seen.add(object)
+
+  if ("effective_percent" in object || "android_music_percent" in object) {
+    return object
+  }
+
+  const directVolume = object.volume
+  if (typeof directVolume === "number") return directVolume
+  if (directVolume && typeof directVolume === "object") return directVolume as Record<string, unknown>
+
+  for (const key of ["result", "status", "lastStatus", "android_audio", "audio_route"]) {
+    const found = findOutputVolumeObject(object[key], seen)
+    if (found !== null) return found
+  }
+
+  return null
+}
+
+function normalizeDeckTrack(value: unknown): DeckTrack | null {
+  const object = objectField({ value }, "value")
+  if (!object) return null
+  const name = stringField(object, "name")
+  const uri = stringField(object, "uri")
+  if (!name || !uri) return null
+
+  return {
+    id: stringField(object, "id") ?? undefined,
+    name,
+    uri,
+    artists: arrayField(object, "artists").flatMap((artist) => typeof artist === "string" ? [artist] : []),
+    album: stringField(object, "album"),
+    image: stringField(object, "image"),
+  }
+}
+
+function objectField(object: Record<string, unknown>, key: string): Record<string, unknown> | null {
+  const value = object[key]
+  return value && typeof value === "object" ? value as Record<string, unknown> : null
+}
+
+function stringField(object: Record<string, unknown> | null, key: string): string | null {
+  if (!object) return null
+  const value = object[key]
+  return typeof value === "string" && value.trim() ? value : null
+}
+
+function numberField(object: Record<string, unknown>, key: string): number | null {
+  const value = object[key]
+  return typeof value === "number" ? clampPercent(value) : null
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function arrayField(object: Record<string, unknown>, key: string): unknown[] {
+  const value = object[key]
+  return Array.isArray(value) ? value : []
+}
+
+function DeckMixControl({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: number
+  onChange: (value: number) => void
+}) {
+  return (
+    <div className="rounded border border-border/50 bg-secondary/20 p-3">
+      <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+        <span>{label}</span>
+        <span className="font-mono">{value}%</span>
+      </div>
+      <Slider value={[value]} onValueChange={([v]) => onChange(v)} max={100} step={1} />
+    </div>
+  )
+}
+
 // Deck Card Component
 function DeckCard({
   title,
@@ -414,16 +940,34 @@ function DeckCard({
   buttons,
   onButtonPress,
   accentColor,
+  track,
+  deckRole,
+  isPlaying,
+  contextLabel,
+  level,
+  onPrimaryAction,
+  primaryActionLabel,
 }: {
   title: string
   subtitle: string
   connected?: boolean
   encoderValue: number
   onEncoderChange: (value: number) => void
-  buttons: { id: number; active: boolean; label: string }[]
+  buttons: { id: number; pressed?: boolean; active?: boolean; label: string }[]
   onButtonPress: (id: number) => void
   accentColor: "primary" | "accent"
+  track?: DeckTrack | null
+  deckRole?: "live" | "queued" | "standby"
+  isPlaying?: boolean
+  contextLabel?: string
+  level?: number
+  onPrimaryAction?: () => void
+  primaryActionLabel?: string
 }) {
+  const accent = accentColor === "primary" ? "#ed4c4c" : "#faa09a"
+  const artists = track?.artists?.length ? track.artists.join(", ") : "No artist"
+  const levelValue = Math.max(0, Math.min(100, level ?? encoderValue))
+
   return (
     <Card className="border-border/50 bg-card/50 backdrop-blur p-4">
       <div className="flex items-center justify-between mb-4">
@@ -438,6 +982,56 @@ function DeckCard({
           "h-2 w-2 rounded-full",
           connected ? (accentColor === "primary" ? "bg-[#ed4c4c]" : "bg-[#faa09a]") : "bg-muted"
         )} />
+      </div>
+
+      <div className="mb-4 rounded border border-border/50 bg-secondary/20 p-3">
+        <div className="flex gap-3">
+          <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded border border-border/50 bg-background/50">
+            {track?.image ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={track.image} alt="" className="h-full w-full object-cover" />
+            ) : (
+              <div className="flex h-full w-full items-center justify-center">
+                <Disc3 className={cn("h-9 w-9", accentColor === "primary" ? "text-[#ed4c4c]/60" : "text-[#faa09a]/60")} />
+              </div>
+            )}
+            {isPlaying && (
+              <div className="absolute right-1 top-1 h-2 w-2 rounded-full bg-[#ed4c4c] shadow-lg shadow-[#ed4c4c]/50" />
+            )}
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="mb-1 flex items-center gap-2">
+              <span className="rounded border border-border/50 bg-background/50 px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+                {deckRole ?? "standby"}
+              </span>
+              <span className="min-w-0 truncate text-[10px] text-muted-foreground">{contextLabel ?? "Spotify"}</span>
+            </div>
+            <p className="truncate text-sm font-semibold">{track?.name ?? "No Spotify track loaded"}</p>
+            <p className="truncate text-xs text-muted-foreground">{artists}</p>
+            <p className="mt-1 truncate text-[11px] text-muted-foreground">{track?.album ?? "Waiting for playback state"}</p>
+          </div>
+        </div>
+
+        <div className="mt-3">
+          <div className="mb-1 flex items-center justify-between text-[10px] text-muted-foreground">
+            <span>Deck level</span>
+            <span className="font-mono">{levelValue}%</span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-background/60">
+            <div
+              className="h-full rounded-full transition-all"
+              style={{ width: `${levelValue}%`, backgroundColor: accent }}
+            />
+          </div>
+        </div>
+
+        {onPrimaryAction && (
+          <Button variant="outline" size="sm" className="mt-3 w-full gap-2" onClick={onPrimaryAction}>
+            <Play className="h-4 w-4" />
+            {primaryActionLabel ?? "Load"}
+          </Button>
+        )}
       </div>
 
       {/* Turntable Visual */}
@@ -481,17 +1075,17 @@ function DeckCard({
         {(buttons.length > 0 ? buttons : Array(4).fill({ id: 0, active: false, label: "" })).map((btn, i) => (
           <Button
             key={i}
-            variant={btn.active ? "default" : "outline"}
+            variant={btn.pressed || btn.active ? "default" : "outline"}
             className={cn(
               "h-12 p-0 border-border/50 transition-all",
-              btn.active && (accentColor === "primary"
+              (btn.pressed || btn.active) && (accentColor === "primary"
                 ? "bg-[#ed4c4c] text-white shadow-lg shadow-[#ed4c4c]/25"
                 : "bg-[#faa09a] text-black shadow-lg shadow-[#faa09a]/25"),
-              !btn.active && "hover:bg-secondary"
+              !(btn.pressed || btn.active) && "hover:bg-secondary"
             )}
             onClick={() => onButtonPress(btn.id || i)}
           >
-            <span className="text-xs font-mono">{i + 1}</span>
+            <span className="text-xs font-mono">{btn.label || i + 1}</span>
           </Button>
         ))}
       </div>

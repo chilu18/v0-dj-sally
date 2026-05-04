@@ -7,7 +7,7 @@ import { NextRequest, NextResponse } from "next/server"
 const SALLY_REMOTE_CONTROL_URL = process.env.SALLY_REMOTE_CONTROL_URL || "http://127.0.0.1:8787"
 const SALLY_DEVICE_ID = process.env.SALLY_DEVICE_ID || "sally-samsung"
 const SALLY_ADMIN_TOKEN = process.env.SALLY_ADMIN_TOKEN
-const SALLY_WAIT_MS = process.env.SALLY_WAIT_MS || "10000"
+const SALLY_WAIT_MS = process.env.SALLY_WAIT_MS || "45000"
 
 interface CommandPayload {
   type: string
@@ -17,6 +17,17 @@ interface CommandPayload {
 // Map dashboard commands to Sally API commands
 function mapCommand(command: CommandPayload): Record<string, unknown> | null {
   switch (command.type) {
+    case "spotify_resume":
+    case "spotify_pause":
+    case "spotify_next":
+    case "open_spotify":
+    case "recover_playback":
+    case "status":
+      return command
+
+    case "set_volume":
+      return { type: "set_volume", percent: command.percent }
+
     case "volume":
       return { type: "set_volume", percent: command.value }
 
@@ -28,7 +39,7 @@ function mapCommand(command: CommandPayload): Record<string, unknown> | null {
     case "transport":
       switch (command.action) {
         case "play":
-          return { type: "spotify_play" }
+          return { type: "spotify_resume" }
         case "pause":
           return { type: "spotify_pause" }
         case "skipForward":

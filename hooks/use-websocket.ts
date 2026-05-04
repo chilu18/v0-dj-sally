@@ -17,6 +17,44 @@ export interface DeviceState {
     encoder: { value: number; min: number; max: number }
   }[]
   speaker: { connected: boolean; volume: number; muted: boolean }
+  spotify: SpotifyState
+  hidSetup?: {
+    enabled: boolean
+    decks: {
+      pad: number
+      label: string
+      rawPath: string
+      rawPaths?: string[]
+      eventPath: string
+      eventPaths?: string[]
+      learnedCodes: number[]
+      lastEvent: string | null
+      lastHex: string | null
+      lastSource?: string | null
+      lastKnob?: string | null
+      knobPressed?: boolean
+    }[]
+  }
+}
+
+export interface SpotifyTrackState {
+  id?: string
+  name: string
+  uri: string
+  artists: string[]
+  album: string | null
+  image?: string | null
+}
+
+export interface SpotifyState {
+  isPlaying: boolean
+  deviceName: string | null
+  contextUri: string | null
+  contextType: string | null
+  nowPlaying: SpotifyTrackState | null
+  incoming: SpotifyTrackState | null
+  queue: SpotifyTrackState[]
+  updatedAt: string | null
 }
 
 const initialState: DeviceState = {
@@ -48,6 +86,23 @@ const initialState: DeviceState = {
     },
   ],
   speaker: { connected: false, volume: 65, muted: false },
+  spotify: {
+    isPlaying: false,
+    deviceName: null,
+    contextUri: null,
+    contextType: null,
+    nowPlaying: null,
+    incoming: null,
+    queue: [],
+    updatedAt: null,
+  },
+  hidSetup: {
+    enabled: false,
+    decks: [
+      { pad: 1, label: "Deck A", rawPath: "", eventPath: "", learnedCodes: [], lastEvent: null, lastHex: null },
+      { pad: 2, label: "Deck B", rawPath: "", eventPath: "", learnedCodes: [], lastEvent: null, lastHex: null },
+    ],
+  },
 }
 
 // Default WebSocket URL from environment or fallback
@@ -179,12 +234,12 @@ export function useWebSocket(): UseWebSocketReturn {
     [sendMessage]
   )
 
-  // Cleanup on unmount
   useEffect(() => {
+    connect()
     return () => {
       wsRef.current?.close()
     }
-  }, [])
+  }, [connect])
 
   return {
     status,
