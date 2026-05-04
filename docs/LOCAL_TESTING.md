@@ -96,15 +96,18 @@ Move the volume slider or click the mute button. These commands are forwarded to
 
 - `{ type: "set_volume", percent: 0-100 }` - Set volume
 - Volume is set to 0 when muted, restored when unmuted
+- Status/command responses use `result.volume.android_music_percent` or `effective_percent` for the Bamboo/Samsung output before falling back to Spotify Connect volume.
 
 ### Transport Controls
 
 Click play/pause/skip buttons. These are forwarded to Sally:
 
-- `{ type: "spotify_play" }` - Play
+- `{ type: "spotify_resume" }` - Resume
 - `{ type: "spotify_pause" }` - Pause  
 - `{ type: "spotify_next" }` - Skip forward
 - `{ type: "spotify_previous" }` - Skip back
+- `{ type: "open_spotify", "uri": "spotify:playlist:1oT190vGpWmZY7NPhndFUM" }` - Open the current playlist
+- `{ type: "recover_playback" }` - Attempt local playback recovery when supported by the backend
 
 ### Local-Only Controls
 

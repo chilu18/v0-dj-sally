@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process"
 import { createReadStream, existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { WebSocketServer, WebSocket } from "ws"
@@ -8,8 +9,14 @@ loadEnvFiles()
 const SALLY_REMOTE_CONTROL_URL = process.env.SALLY_REMOTE_CONTROL_URL || "http://127.0.0.1:8787"
 const SALLY_DEVICE_ID = process.env.SALLY_DEVICE_ID || "sally-samsung"
 const SALLY_ADMIN_TOKEN = process.env.SALLY_ADMIN_TOKEN
+const SALLY_COMMAND_PROXY_URL = process.env.SALLY_COMMAND_PROXY_URL
 const DJ_SALLY_WS_PORT = parseInt(process.env.DJ_SALLY_WS_PORT || "8080", 10)
-const SALLY_WAIT_MS = parseInt(process.env.SALLY_WAIT_MS || "10000", 10)
+const SALLY_WAIT_MS = parseInt(process.env.SALLY_WAIT_MS || "45000", 10)
+const SALLY_STATUS_POLL_MS = parseInt(process.env.SALLY_STATUS_POLL_MS || "10000", 10)
+const MUBIT_DJ_LOGGING_ENABLED = process.env.MUBIT_DJ_LOGGING_ENABLED !== "0"
+const MUBIT_REMEMBER_SCRIPT =
+  process.env.MUBIT_REMEMBER_SCRIPT || `${process.env.HOME || "/home/hs-chilu"}/heysalad-agent-integrations/scripts/mubit-remember.mjs`
+const MUBIT_NODE = process.env.MUBIT_NODE || "/usr/bin/node"
 const HID_ENABLED = process.env.DJ_SALLY_HID_ENABLED !== "0"
 const HID_DECK_A_KEYBOARD =
   process.env.DJ_SALLY_HID_DECK_A_KEYBOARD || "/dev/input/by-path/pci-0000:00:14.0-usb-0:2:1.2-event-kbd"
@@ -77,6 +84,7 @@ interface DeviceState {
     encoder: { value: number; min: number; max: number }
   }[]
   speaker: { connected: boolean; volume: number; muted: boolean }
+  spotify: SpotifyState
   hidSetup?: {
     enabled: boolean
     decks: {
@@ -94,6 +102,26 @@ interface DeviceState {
       knobPressed?: boolean
     }[]
   }
+}
+
+interface SpotifyTrackState {
+  id?: string
+  name: string
+  uri: string
+  artists: string[]
+  album: string | null
+  image?: string | null
+}
+
+interface SpotifyState {
+  isPlaying: boolean
+  deviceName: string | null
+  contextUri: string | null
+  contextType: string | null
+  nowPlaying: SpotifyTrackState | null
+  incoming: SpotifyTrackState | null
+  queue: SpotifyTrackState[]
+  updatedAt: string | null
 }
 
 let deviceState: DeviceState = {
@@ -125,6 +153,16 @@ let deviceState: DeviceState = {
     },
   ],
   speaker: { connected: false, volume: 65, muted: false },
+  spotify: {
+    isPlaying: false,
+    deviceName: null,
+    contextUri: null,
+    contextType: null,
+    nowPlaying: null,
+    incoming: null,
+    queue: [],
+    updatedAt: null,
+  },
   hidSetup: {
     enabled: HID_ENABLED,
     decks: [
@@ -167,6 +205,8 @@ let previousVolume = 65
 const clients = new Set<WebSocket>()
 const learnedButtonCodes = new Map<number, number[]>()
 const knobPressed = new Map<number, boolean>()
+const buttonPulseTimers = new Map<string, NodeJS.Timeout>()
+let mubitUnavailableLogged = false
 
 interface InputEvent {
   type: number
@@ -224,11 +264,15 @@ function startRawHidReader(pad: number, path: string) {
 
 function startKeyboardReader(pad: number, path: string) {
   startInputReader(`Deck ${pad} keyboard`, path, (event) => {
-    if (event.type !== EV_KEY || event.value === KEY_REPEAT || MODIFIER_KEY_CODES.has(event.code)) {
+    if (event.type !== EV_KEY || MODIFIER_KEY_CODES.has(event.code)) {
       return
     }
 
     if (handleProgrammedKeyControl(pad, event, path)) {
+      return
+    }
+
+    if (event.value === KEY_REPEAT) {
       return
     }
 
@@ -264,21 +308,23 @@ function handleProgrammedKeyControl(pad: number, event: InputEvent, path: string
 
   deck.connected = true
   if (control.kind === "button" && control.button !== undefined && deck.buttons[control.button]) {
-    deck.buttons[control.button].pressed = event.value === KEY_PRESS
+    const pressed = event.value === KEY_PRESS || event.value === KEY_REPEAT
+    deck.buttons[control.button].pressed = pressed
     updateHidSetup(
       pad,
-      `programmed ${deck.buttons[control.button].label} ${deck.buttons[control.button].pressed ? "down" : "up"} code=${event.code}`,
+      `programmed ${deck.buttons[control.button].label} ${pressed ? "down" : "up"} code=${event.code}`,
       null,
       path
     )
     console.log(
-      `[HID] Deck ${pad} programmed ${deck.buttons[control.button].label} ${deck.buttons[control.button].pressed ? "down" : "up"} code=${event.code}`
+      `[HID] Deck ${pad} programmed ${deck.buttons[control.button].label} ${pressed ? "down" : "up"} code=${event.code}`
     )
+    if (pressed) scheduleButtonRelease(pad, control.button)
     broadcastState()
     return true
   }
 
-  if (control.kind === "knob" && event.value === KEY_PRESS) {
+  if (control.kind === "knob" && (event.value === KEY_PRESS || event.value === KEY_REPEAT)) {
     if (control.pressed) {
       knobPressed.set(pad, true)
       updateHidKnob(pad, `programmed knob click code=${event.code}`, true, path)
@@ -303,6 +349,22 @@ function handleProgrammedKeyControl(pad: number, event: InputEvent, path: string
   }
 
   return true
+}
+
+function scheduleButtonRelease(pad: number, button: number) {
+  const key = `${pad}:${button}`
+  const existing = buttonPulseTimers.get(key)
+  if (existing) clearTimeout(existing)
+
+  const timer = setTimeout(() => {
+    buttonPulseTimers.delete(key)
+    const deck = deviceState.macroPads[pad - 1]
+    if (!deck?.buttons[button]) return
+    deck.buttons[button].pressed = false
+    broadcastState()
+  }, 600)
+  timer.unref()
+  buttonPulseTimers.set(key, timer)
 }
 
 function startEncoderReader(pad: number, path: string) {
@@ -483,34 +545,135 @@ function broadcastState() {
   })
 }
 
+type SallyPayload = Record<string, unknown>
+
 // Send command to Sally remote control API
-async function sendToSally(command: Record<string, unknown>): Promise<boolean> {
+async function sendToSally(command: SallyPayload): Promise<SallyPayload | null> {
   if (!SALLY_ADMIN_TOKEN) {
     console.log("[Bridge] SALLY_ADMIN_TOKEN not set, skipping Sally command:", command)
-    return false
+    void rememberDjSallyCommand(command, { ok: false, skipped: true, reason: "missing_sally_admin_token" })
+    return null
   }
 
+  const abortController = new AbortController()
+  const timeout = setTimeout(() => abortController.abort(), SALLY_WAIT_MS + 10000)
+  timeout.unref()
+
   try {
-    const response = await fetch(sallyCommandUrl(), {
+    const response = await fetch(SALLY_COMMAND_PROXY_URL || sallyCommandUrl(), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${SALLY_ADMIN_TOKEN}`,
+        ...(SALLY_COMMAND_PROXY_URL ? {} : { Authorization: `Bearer ${SALLY_ADMIN_TOKEN}` }),
       },
       body: JSON.stringify(command),
+      signal: abortController.signal,
     })
 
+    const payload = await parseJsonResponse(response)
     if (!response.ok) {
-      console.error("[Bridge] Sally command failed:", response.status, await response.text())
-      return false
+      console.error("[Bridge] Sally command failed:", response.status, JSON.stringify(summarizeSallyPayload(payload)))
+      void rememberDjSallyCommand(command, payload, `http_${response.status}`)
+      return payload
+    }
+    if (payload.ok === false) {
+      console.error("[Bridge] Sally command rejected:", JSON.stringify(summarizeSallyPayload(payload)))
+      void rememberDjSallyCommand(command, payload, "rejected")
+      return payload
     }
 
+    applySallyPayloadState(payload)
     console.log("[Bridge] Sally command sent:", command)
-    return true
+    void rememberDjSallyCommand(command, payload)
+    return payload
   } catch (error) {
     console.error("[Bridge] Failed to send Sally command:", error)
-    return false
+    void rememberDjSallyCommand(command, {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return null
+  } finally {
+    clearTimeout(timeout)
   }
+}
+
+async function rememberDjSallyCommand(command: SallyPayload, payload: SallyPayload, failureType?: string) {
+  if (!MUBIT_DJ_LOGGING_ENABLED) return
+
+  const commandType = typeof command.type === "string" ? command.type : "unknown"
+  const ok = payload.ok !== false && !payload.error && !failureType
+  const result = summarizeSallyPayload(payload)
+  const track = extractSpotifyTrack(payload)
+  const provider = extractSpeechProvider(payload)
+  const content = [
+    `DJ Sally command ${commandType} ${ok ? "succeeded" : "failed"}.`,
+    failureType ? `Failure type: ${failureType}.` : "",
+    track ? `Spotify track: ${track}.` : "",
+    provider ? `Speech provider: ${provider}.` : "",
+    result.error ? `Error: ${String(result.error).slice(0, 220)}.` : "",
+  ].filter(Boolean).join(" ")
+
+  if (!existsSync(MUBIT_REMEMBER_SCRIPT)) {
+    if (!mubitUnavailableLogged) {
+      console.error("[Bridge] Mubit logging unavailable: helper script missing")
+      mubitUnavailableLogged = true
+    }
+    return
+  }
+
+  const child = spawn(MUBIT_NODE, [MUBIT_REMEMBER_SCRIPT], {
+    stdio: ["pipe", "ignore", "pipe"],
+    env: process.env,
+  })
+
+  child.stdin.end(JSON.stringify({
+    content,
+    lessonType: ok ? "trace" : "failure",
+    lessonScope: "project",
+    importance: ok ? "low" : "high",
+    metadata: {
+      system: "dj-sally",
+      command_type: commandType,
+      ok,
+    },
+    upsertKey: `dj-sally-command-${commandType}-${ok ? "ok" : "failed"}-${Date.now()}`,
+    wait: false,
+  }))
+
+  child.stderr.on("data", (chunk) => {
+    if (!mubitUnavailableLogged) {
+      console.error("[Bridge] Mubit logging failed:", String(chunk).trim())
+      mubitUnavailableLogged = true
+    }
+  })
+}
+
+function extractSpotifyTrack(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null
+  const object = value as Record<string, unknown>
+  const track = object.track && typeof object.track === "object" ? object.track as Record<string, unknown> : null
+  if (track) {
+    const name = typeof track.name === "string" ? track.name : null
+    const artists = Array.isArray(track.artists) ? track.artists.filter((item) => typeof item === "string").join(", ") : null
+    if (name) return artists ? `${name} by ${artists}` : name
+  }
+  for (const child of Object.values(object)) {
+    const found = extractSpotifyTrack(child)
+    if (found) return found
+  }
+  return null
+}
+
+function extractSpeechProvider(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null
+  const object = value as Record<string, unknown>
+  if (typeof object.speech_provider === "string") return object.speech_provider
+  for (const child of Object.values(object)) {
+    const found = extractSpeechProvider(child)
+    if (found) return found
+  }
+  return null
 }
 
 function sallyCommandUrl() {
@@ -518,11 +681,211 @@ function sallyCommandUrl() {
   return `${base}/devices/${encodeURIComponent(SALLY_DEVICE_ID)}/command?wait_ms=${SALLY_WAIT_MS}`
 }
 
+function sallyStatusUrl() {
+  const base = SALLY_REMOTE_CONTROL_URL.replace(/\/$/, "")
+  return `${base}/devices/${encodeURIComponent(SALLY_DEVICE_ID)}/status`
+}
+
+async function refreshSallyStatus(): Promise<boolean> {
+  if (!SALLY_ADMIN_TOKEN) return false
+
+  try {
+    const response = await fetch(sallyStatusUrl(), {
+      headers: {
+        Authorization: `Bearer ${SALLY_ADMIN_TOKEN}`,
+      },
+    })
+    const payload = await parseJsonResponse(response)
+    if (!response.ok) {
+      console.error("[Bridge] Sally status failed:", response.status, JSON.stringify(summarizeSallyPayload(payload)))
+      return false
+    }
+    return applySallyPayloadState(payload)
+  } catch (error) {
+    console.error("[Bridge] Failed to refresh Sally status:", error)
+    return false
+  }
+}
+
+async function parseJsonResponse(response: Response): Promise<SallyPayload> {
+  const text = await response.text()
+  if (!text.trim()) return {}
+  try {
+    const parsed = JSON.parse(text)
+    return parsed && typeof parsed === "object" ? parsed as SallyPayload : { value: parsed }
+  } catch {
+    return { raw: text }
+  }
+}
+
+function applySallyPayloadState(payload: unknown): boolean {
+  const volume = findVolumeReport(payload)
+  const spotify = findSpotifyState(payload)
+  let changed = false
+
+  if (volume) {
+    deviceState.speaker.volume = volume.percent
+    deviceState.speaker.muted = volume.percent <= 0
+    deviceState.speaker.connected = true
+    previousVolume = volume.percent > 0 ? volume.percent : previousVolume
+    changed = true
+  }
+
+  if (spotify) {
+    deviceState.spotify = spotify
+    changed = true
+  }
+
+  if (changed) {
+    broadcastState()
+  }
+  return changed
+}
+
+function findSpotifyState(payload: unknown): SpotifyState | null {
+  const spotify = findObjectWithSpotifyFields(payload, new Set())
+  if (!spotify) return null
+
+  const queue = arrayField(spotify, "queue")
+    .map(normalizeSpotifyTrack)
+    .filter((track): track is SpotifyTrackState => Boolean(track))
+  const nowPlaying = normalizeSpotifyTrack(spotify.track)
+  const incoming = queue.find((track) => track.uri !== nowPlaying?.uri) ?? null
+  const device = spotify.device && typeof spotify.device === "object" ? spotify.device as Record<string, unknown> : null
+  const context = spotify.context && typeof spotify.context === "object" ? spotify.context as Record<string, unknown> : null
+
+  return {
+    isPlaying: Boolean(spotify.isPlaying),
+    deviceName: stringField(device, "name"),
+    contextUri: stringField(context, "uri"),
+    contextType: stringField(context, "type"),
+    nowPlaying,
+    incoming,
+    queue,
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+function findObjectWithSpotifyFields(value: unknown, seen: Set<object>): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") return null
+  const object = value as Record<string, unknown>
+  if (seen.has(object)) return null
+  seen.add(object)
+
+  if ("isPlaying" in object && ("track" in object || "queue" in object || "context" in object)) {
+    return object
+  }
+
+  const likelySpotify = object.spotify
+  if (likelySpotify && typeof likelySpotify === "object") {
+    const found = findObjectWithSpotifyFields(likelySpotify, seen)
+    if (found) return found
+  }
+
+  for (const child of Object.values(object)) {
+    const found = findObjectWithSpotifyFields(child, seen)
+    if (found) return found
+  }
+  return null
+}
+
+function normalizeSpotifyTrack(value: unknown): SpotifyTrackState | null {
+  if (!value || typeof value !== "object") return null
+  const object = value as Record<string, unknown>
+  const name = stringField(object, "name")
+  const uri = stringField(object, "uri")
+  if (!name || !uri) return null
+
+  return {
+    id: stringField(object, "id") ?? undefined,
+    name,
+    uri,
+    artists: arrayField(object, "artists").flatMap((artist) => typeof artist === "string" ? [artist] : []),
+    album: stringField(object, "album"),
+    image: stringField(object, "image"),
+  }
+}
+
+function findVolumeReport(payload: unknown): { percent: number; source: string } | null {
+  const volume = findObjectWithVolumeFields(payload, new Set())
+  if (!volume) return null
+
+  const android = numberField(volume, "android_music_percent")
+  const effective = numberField(volume, "effective_percent")
+  const spotify = numberField(volume, "spotify_connect_percent")
+  const percent = android ?? effective ?? spotify
+  if (percent === null) return null
+
+  return {
+    percent: clamp(Math.round(percent), 0, 100),
+    source: android !== null ? "android_music_percent" : effective !== null ? "effective_percent" : "spotify_connect_percent",
+  }
+}
+
+function findObjectWithVolumeFields(value: unknown, seen: Set<object>): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") return null
+  const object = value as Record<string, unknown>
+  if (seen.has(object)) return null
+  seen.add(object)
+
+  if (
+    numberField(object, "android_music_percent") !== null ||
+    numberField(object, "effective_percent") !== null ||
+    numberField(object, "spotify_connect_percent") !== null
+  ) {
+    return object
+  }
+
+  const likelyVolume = object.volume
+  if (likelyVolume && typeof likelyVolume === "object") {
+    const found = findObjectWithVolumeFields(likelyVolume, seen)
+    if (found) return found
+  }
+
+  for (const child of Object.values(object)) {
+    const found = findObjectWithVolumeFields(child, seen)
+    if (found) return found
+  }
+  return null
+}
+
+function numberField(object: Record<string, unknown>, key: string): number | null {
+  const value = object[key]
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
+}
+
+function stringField(object: Record<string, unknown> | null, key: string): string | null {
+  if (!object) return null
+  const value = object[key]
+  return typeof value === "string" && value.trim() ? value : null
+}
+
+function arrayField(object: Record<string, unknown>, key: string): unknown[] {
+  const value = object[key]
+  return Array.isArray(value) ? value : []
+}
+
+function summarizeSallyPayload(payload: SallyPayload): SallyPayload {
+  const summary: SallyPayload = {}
+  for (const key of ["ok", "error", "command_id", "queued", "timed_out", "status"]) {
+    if (key in payload) summary[key] = payload[key]
+  }
+  return Object.keys(summary).length ? summary : { ok: payload.ok ?? false }
+}
+
 function loadEnvFiles() {
   const shellEnv = new Set(Object.keys(process.env))
 
-  for (const fileName of [".env", ".env.local"]) {
-    const filePath = join(process.cwd(), fileName)
+  for (const filePath of [
+    join(process.cwd(), ".env"),
+    join(process.cwd(), ".env.local"),
+    `${process.env.HOME || ""}/.config/heysalad/agent-integrations.env`,
+  ]) {
     if (!existsSync(filePath)) continue
 
     const text = readFileSync(filePath, "utf8")
@@ -571,7 +934,7 @@ async function handleCommand(data: Record<string, unknown>) {
       const action = data.action as string
       switch (action) {
         case "play":
-          await sendToSally({ type: "spotify_play" })
+          await sendToSally({ type: "spotify_resume" })
           break
         case "pause":
           await sendToSally({ type: "spotify_pause" })
@@ -582,6 +945,24 @@ async function handleCommand(data: Record<string, unknown>) {
         case "skipBack":
           await sendToSally({ type: "spotify_previous" })
           break
+      }
+      break
+    }
+
+    case "spotify_resume":
+    case "spotify_pause":
+    case "spotify_next":
+    case "set_volume":
+    case "open_spotify":
+    case "recover_playback": {
+      const command = { ...data }
+      await sendToSally(command)
+      if (type === "set_volume") {
+        const percent = data.percent as number
+        if (Number.isFinite(percent)) {
+          deviceState.speaker.volume = clamp(Math.round(percent), 0, 100)
+          deviceState.speaker.muted = deviceState.speaker.volume <= 0
+        }
       }
       break
     }
@@ -650,6 +1031,13 @@ async function handleCommand(data: Record<string, unknown>) {
 
 // Create WebSocket server
 startHidReaders()
+void refreshSallyStatus()
+if (SALLY_STATUS_POLL_MS > 0) {
+  const sallyStatusTimer = setInterval(() => {
+    void refreshSallyStatus()
+  }, SALLY_STATUS_POLL_MS)
+  sallyStatusTimer.unref()
+}
 
 const wss = new WebSocketServer({ port: DJ_SALLY_WS_PORT })
 
